@@ -8,7 +8,17 @@ import { keepassxcProvider } from '../src/core/credentials/providers/keepassxc.j
 import { resolveCredentials } from '../src/core/credentials/index.js'
 import { createLogger } from '../src/core/logger.js'
 
-const execFileMock = vi.hoisted(() => vi.fn())
+const execFileMock = vi.hoisted(() => {
+  const fn = vi.fn()
+  ;(fn as any)[Symbol.for('nodejs.util.promisify.custom')] = (...args: any[]) =>
+    new Promise((resolve, reject) => {
+      fn(...args, (err: Error | null, stdout?: string, stderr?: string) => {
+        if (err) return reject(err)
+        resolve({ stdout: stdout ?? '', stderr: stderr ?? '' })
+      })
+    })
+  return fn
+})
 
 vi.mock('node:child_process', () => ({
   execFile: execFileMock,
