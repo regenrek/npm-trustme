@@ -41,6 +41,15 @@ interface CommonOptions {
   opUsernameField?: string
   opPasswordField?: string
   opOtpField?: string
+  bwItem?: string
+  bwSession?: string
+  lpassItem?: string
+  lpassOtpField?: string
+  kpxDb?: string
+  kpxEntry?: string
+  kpxKeyfile?: string
+  kpxPassword?: string
+  kpxPwStdin?: boolean
 }
 
 preloadEnv()
@@ -72,7 +81,16 @@ const commonArgs = {
   'op-item': { type: 'string', description: '1Password item name for lookup' },
   'op-username-field': { type: 'string', description: '1Password field for username (default: username)' },
   'op-password-field': { type: 'string', description: '1Password field for password (default: password)' },
-  'op-otp-field': { type: 'string', description: '1Password field for OTP (default: one-time password)' }
+  'op-otp-field': { type: 'string', description: '1Password field for OTP (default: one-time password)' },
+  'bw-item': { type: 'string', description: 'Bitwarden item id or name' },
+  'bw-session': { type: 'string', description: 'Bitwarden session token (optional)' },
+  'lpass-item': { type: 'string', description: 'LastPass item name or id' },
+  'lpass-otp-field': { type: 'string', description: 'LastPass field name for OTP (optional)' },
+  'kpx-db': { type: 'string', description: 'KeePassXC database path' },
+  'kpx-entry': { type: 'string', description: 'KeePassXC entry path' },
+  'kpx-keyfile': { type: 'string', description: 'KeePassXC key file path' },
+  'kpx-password': { type: 'string', description: 'KeePassXC database password' },
+  'kpx-pw-stdin': { type: 'boolean', description: 'Use keepassxc-cli --pw-stdin when supported' }
 } as const
 
 const main = defineCommand({
@@ -194,7 +212,16 @@ function normalizeArgs(raw: Record<string, unknown>): CommonOptions {
     opItem: stringArg((raw as any)['op-item']),
     opUsernameField: stringArg((raw as any)['op-username-field']),
     opPasswordField: stringArg((raw as any)['op-password-field']),
-    opOtpField: stringArg((raw as any)['op-otp-field'])
+    opOtpField: stringArg((raw as any)['op-otp-field']),
+    bwItem: stringArg((raw as any)['bw-item']),
+    bwSession: stringArg((raw as any)['bw-session']),
+    lpassItem: stringArg((raw as any)['lpass-item']),
+    lpassOtpField: stringArg((raw as any)['lpass-otp-field']),
+    kpxDb: stringArg((raw as any)['kpx-db']),
+    kpxEntry: stringArg((raw as any)['kpx-entry']),
+    kpxKeyfile: stringArg((raw as any)['kpx-keyfile']),
+    kpxPassword: stringArg((raw as any)['kpx-password']),
+    kpxPwStdin: Boolean((raw as any)['kpx-pw-stdin'])
   }
 }
 
@@ -251,6 +278,15 @@ function resolveCredentialOptions(options: CommonOptions) {
     opUsernameField: options.opUsernameField || env.NPM_TRUSTME_OP_USERNAME_FIELD,
     opPasswordField: options.opPasswordField || env.NPM_TRUSTME_OP_PASSWORD_FIELD,
     opOtpField: options.opOtpField || env.NPM_TRUSTME_OP_OTP_FIELD,
+    bwItem: options.bwItem || env.NPM_TRUSTME_BW_ITEM,
+    bwSession: options.bwSession || env.NPM_TRUSTME_BW_SESSION || env.BW_SESSION,
+    lpassItem: options.lpassItem || env.NPM_TRUSTME_LPASS_ITEM,
+    lpassOtpField: options.lpassOtpField || env.NPM_TRUSTME_LPASS_OTP_FIELD,
+    kpxDb: options.kpxDb || env.NPM_TRUSTME_KPX_DB,
+    kpxEntry: options.kpxEntry || env.NPM_TRUSTME_KPX_ENTRY,
+    kpxKeyfile: options.kpxKeyfile || env.NPM_TRUSTME_KPX_KEYFILE,
+    kpxPassword: options.kpxPassword || env.NPM_TRUSTME_KPX_PASSWORD,
+    kpxPwStdin: toBool(options.kpxPwStdin, env.NPM_TRUSTME_KPX_PW_STDIN),
     requireOtp: false
   }
 }
@@ -272,6 +308,12 @@ function numberArg(value: unknown): number | undefined {
   if (value === undefined || value === null) return undefined
   const num = Number(value)
   return Number.isFinite(num) ? num : undefined
+}
+
+function toBool(value: boolean | undefined, envValue: string | undefined): boolean {
+  if (value !== undefined) return value
+  if (!envValue) return false
+  return ['1', 'true', 'yes', 'on'].includes(envValue.toLowerCase())
 }
 
 function inferGitHubRepo(): { owner: string; repo: string } | null {

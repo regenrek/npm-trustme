@@ -2,6 +2,9 @@ import type { Logger } from '../logger.js'
 import type { CredentialOptions, ResolvedCredentials, PartialCredentials, CredentialProvider } from './types.js'
 import { directProvider } from './providers/direct.js'
 import { onePasswordProvider } from './providers/onepassword.js'
+import { bitwardenProvider } from './providers/bitwarden.js'
+import { lastPassProvider } from './providers/lastpass.js'
+import { keepassxcProvider } from './providers/keepassxc.js'
 import { promptProvider } from './providers/prompt.js'
 
 export type { CredentialOptions, ResolvedCredentials }
@@ -13,7 +16,10 @@ export async function resolveCredentials(
 ): Promise<ResolvedCredentials> {
   const providers: CredentialProvider[] = [
     directProvider(),
-    onePasswordProvider()
+    onePasswordProvider(),
+    bitwardenProvider(),
+    lastPassProvider(),
+    keepassxcProvider()
   ]
 
   if (interactive) {

@@ -78,6 +78,21 @@ NPM_TRUSTME_OP_ITEM=npmjs.com
 # NPM_TRUSTME_PASSWORD=
 # NPM_TRUSTME_OTP=
 
+# Bitwarden CLI
+# NPM_TRUSTME_BW_ITEM=
+# NPM_TRUSTME_BW_SESSION=
+
+# LastPass CLI
+# NPM_TRUSTME_LPASS_ITEM=
+# NPM_TRUSTME_LPASS_OTP_FIELD=totp
+
+# KeePassXC CLI
+# NPM_TRUSTME_KPX_DB=
+# NPM_TRUSTME_KPX_ENTRY=
+# NPM_TRUSTME_KPX_KEYFILE=
+# NPM_TRUSTME_KPX_PASSWORD=
+# NPM_TRUSTME_KPX_PW_STDIN=true
+
 # Optional runtime tweaks
 # NPM_TRUSTME_STORAGE=.cache/npm-trustme-storage.json
 # NPM_TRUSTME_SCREENSHOT_DIR=.cache/screenshots
@@ -91,3 +106,4 @@ NPM_TRUSTME_OP_ITEM=npmjs.com
   - `skip`
 - The script never prints secrets; screenshots are saved only on errors when `--screenshot-dir` is provided.
 - To add a new password manager, implement a `CredentialProvider` in `src/core/credentials/providers` and register it in `src/core/credentials/index.ts`.
+- Password manager providers supported out of the box: 1Password, Bitwarden, LastPass, KeePassXC.

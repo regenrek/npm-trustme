@@ -12,6 +12,15 @@ export interface CredentialOptions {
   opUsernameField?: string
   opPasswordField?: string
   opOtpField?: string
+  bwItem?: string
+  bwSession?: string
+  lpassItem?: string
+  lpassOtpField?: string
+  kpxDb?: string
+  kpxEntry?: string
+  kpxKeyfile?: string
+  kpxPassword?: string
+  kpxPwStdin?: boolean
   requireOtp?: boolean
 }
 
