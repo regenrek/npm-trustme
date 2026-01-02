@@ -51,11 +51,11 @@ npx npm-trustme ensure \
 Provider order (first wins):
 direct creds -> 1Password -> Bitwarden -> LastPass -> KeePassXC -> prompt (interactive only).
 
-Preferred (1Password):
-- `--op-vault "Personal"` and `--op-item "npmjs.com"`
-- Or env: `NPM_TRUSTME_OP_VAULT`, `NPM_TRUSTME_OP_ITEM`
+Provider requirements:
+- Install the matching CLI for the provider you use (e.g., `op`, `bw`, `lpass`, `keepassxc-cli`).
 
 Other providers (flags or envs):
+- 1Password: `--op-vault` and `--op-item` (or env `NPM_TRUSTME_OP_VAULT`, `NPM_TRUSTME_OP_ITEM`)
 - Bitwarden: `--bw-item`, optional `--bw-session`
 - LastPass: `--lpass-item`, optional `--lpass-otp-field`
 - KeePassXC: `--kpx-db`, `--kpx-entry`, optional `--kpx-keyfile`, `--kpx-password`, `--kpx-pw-stdin`
