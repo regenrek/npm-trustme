@@ -69,7 +69,8 @@ describe('chrome profile helpers', () => {
       )
       const reader: ChromeCookieReader = {
         async getCookies(_url, profile) {
-          return profile === 'Profile 1' ? [{ name: 'npm_token', httpOnly: true }] : []
+          const profileName = typeof profile === 'string' && profile.includes('Profile 1') ? 'Profile 1' : profile
+          return profileName === 'Profile 1' ? [{ name: 'npm_token', httpOnly: true }] : []
         }
       }
       const result = await resolveChromeProfileAuto({ userDataDir: dir, logger, reader })

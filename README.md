@@ -114,6 +114,7 @@ NPM_TRUSTME_OP_ITEM=npmjs.com
 - Chrome profile reuse: `--chrome-profile` / `--chrome-profile-dir` / `--chrome-user-data-dir` / `--chrome-path`.
 - Connect to an existing Chrome: `--chrome-cdp-url` or `--chrome-debug-port` (Chrome must be launched with remote debugging).
 - Auto profile detection uses `chrome-cookies-secure`. If it fails due to native bindings, run `pnpm approve-builds` and `pnpm rebuild chrome-cookies-secure sqlite3 keytar`.
+  - Cookie sync lets you keep Chrome open; npm-trustme copies npmjs.com cookies into a fresh browser context when possible.
 - If the workflow filename includes a path, it is normalized to just the filename.
 - `publishing-access` options:
   - `disallow-tokens` (recommended for OIDC-only)

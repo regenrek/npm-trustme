@@ -69,3 +69,4 @@ Other providers (flags or envs):
 - Chrome profile reuse (manual session): `--chrome-profile` / `--chrome-profile-dir` / `--chrome-user-data-dir` / `--chrome-path`.
 - Connect to an existing Chrome: `--chrome-cdp-url` or `--chrome-debug-port` (Chrome must be launched with remote debugging).
 - Auto profile detection uses `chrome-cookies-secure`; if native bindings fail, rebuild them.
+- Cookie sync allows keeping Chrome open; npm-trustme copies npmjs.com cookies into a fresh context when possible.

@@ -5,7 +5,7 @@ import path from 'node:path'
 import { execSync } from 'node:child_process'
 import { createLogger } from '../core/logger.js'
 import { launchBrowser, saveStorageState, closeBrowser } from '../core/browser/session.js'
-import { resolveChromeProfileAuto } from '../core/browser/chromeProfiles.js'
+import { resolveChromeProfileAuto, readNpmCookiesForProfile } from '../core/browser/chromeProfiles.js'
 import {
   ensureLoggedIn,
   ensureTrustedPublisher,
@@ -142,7 +142,9 @@ async function runCheck(options: CommonOptions): Promise<void> {
   const credentialOptions = resolveCredentialOptions(options)
   const loginMode = resolveLoginMode(options, credentialOptions)
   const creds = await resolveCredentials(credentialOptions, false, logger, loginMode !== 'auto')
-  const session = await launchBrowser(await resolveBrowserOptions(options, loginMode, logger))
+  const browserOptions = await resolveBrowserOptions(options, loginMode, logger)
+  const session = await launchBrowser(browserOptions)
+  await applyBrowserCookies(session, browserOptions, loginMode, logger)
 
   try {
     await ensureLoggedIn(session.page, creds, logger, buildEnsureOptions(options, loginMode))
@@ -173,7 +175,9 @@ async function runEnsure(options: CommonOptions & { dryRun?: boolean }): Promise
   const credentialOptions = resolveCredentialOptions(options)
   const loginMode = resolveLoginMode(options, credentialOptions)
   const creds = await resolveCredentials(credentialOptions, loginMode === 'auto', logger, loginMode !== 'auto')
-  const session = await launchBrowser(await resolveBrowserOptions(options, loginMode, logger))
+  const browserOptions = await resolveBrowserOptions(options, loginMode, logger)
+  const session = await launchBrowser(browserOptions)
+  await applyBrowserCookies(session, browserOptions, loginMode, logger)
 
   try {
     await ensureLoggedIn(session.page, creds, logger, buildEnsureOptions(options, loginMode))
@@ -445,6 +449,32 @@ async function resolveBrowserOptions(options: CommonOptions, loginMode: LoginMod
   }
 
   return resolved
+}
+
+async function applyBrowserCookies(
+  session: Awaited<ReturnType<typeof launchBrowser>>,
+  browserOptions: Awaited<ReturnType<typeof resolveBrowserOptions>>,
+  loginMode: LoginMode,
+  logger: ReturnType<typeof createLogger>
+) {
+  if (loginMode !== 'browser') return
+  if (browserOptions.chromeCdpUrl || browserOptions.chromeDebugPort) return
+  if (session.isPersistent) return
+  const profile = browserOptions.chromeProfile
+  if (!profile) return
+
+  const cookies = await readNpmCookiesForProfile({
+    profile,
+    logger,
+    userDataDir: browserOptions.chromeUserDataDir,
+    profileDir: browserOptions.chromeProfileDir
+  })
+  if (!cookies.length) {
+    logger.warn(`No npm cookies found for Chrome profile "${profile}".`)
+    return
+  }
+  await session.context.addCookies(cookies)
+  logger.info(`Applied ${cookies.length} cookies from Chrome profile "${profile}".`)
 }
 
 function preloadEnv() {
