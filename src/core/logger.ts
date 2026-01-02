@@ -35,5 +35,5 @@ export function createLogger(verbose = false): Logger {
 export function redact(value: string | undefined): string {
   if (!value) return ''
   if (value.length <= 4) return '****'
-  return `${value.slice(0, 2)}…${value.slice(-2)}`
+  return `${value.slice(0, 2)}...${value.slice(-2)}`
 }

@@ -7,8 +7,8 @@ npm-trustme gives you a 100% automated way to set up npm Trusted Publishers.
 [![npm](https://img.shields.io/npm/v/npm-trustme?logo=npm)](https://www.npmjs.com/package/npm-trustme)
 
 ## Why
-- npm revoked classic tokens and limits granular tokens to short lifetimes, so long‑lived CI tokens are unreliable.
-- Local npm login now issues short‑lived sessions, which forces repeated manual auth.
+- npm revoked classic tokens and limits granular tokens to short lifetimes, so long-lived CI tokens are unreliable.
+- Local npm login now issues short-lived sessions, which forces repeated manual auth.
 - Trusted Publishers solve this, but npm only exposes setup via the browser UI.
 
 npm-trustme automates that UI so teams can keep releases fully automated.
