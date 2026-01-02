@@ -12,8 +12,9 @@ export type { CredentialOptions, ResolvedCredentials }
 export async function resolveCredentials(
   options: CredentialOptions,
   interactive: boolean,
-  logger: Logger
-): Promise<ResolvedCredentials> {
+  logger: Logger,
+  allowMissing: boolean = false
+): Promise<ResolvedCredentials | null> {
   const providers: CredentialProvider[] = [
     directProvider(),
     onePasswordProvider(),
@@ -33,6 +34,9 @@ export async function resolveCredentials(
   }
 
   if (!current.username || !current.password) {
+    if (allowMissing) {
+      return null
+    }
     throw new Error('Missing npm username/password (use --op-* refs, --username/--password, or env vars).')
   }
 

@@ -61,6 +61,7 @@ NPM_TRUSTME_REPO=codex-1up
 NPM_TRUSTME_WORKFLOW=npm-release.yml
 NPM_TRUSTME_PUBLISHER=github
 NPM_TRUSTME_PUBLISHING_ACCESS=disallow-tokens
+# NPM_TRUSTME_LOGIN_MODE=auto
 
 # Optional GitHub environment
 # NPM_TRUSTME_ENVIRONMENT=
@@ -96,9 +97,18 @@ NPM_TRUSTME_OP_ITEM=npmjs.com
 # Optional runtime tweaks
 # NPM_TRUSTME_STORAGE=.cache/npm-trustme-storage.json
 # NPM_TRUSTME_SCREENSHOT_DIR=.cache/screenshots
+
+# Optional Chrome profile reuse (manual login/session)
+# NPM_TRUSTME_CHROME_PROFILE=Default
+# NPM_TRUSTME_CHROME_PROFILE_DIR=/path/to/Chrome/Profile 1
+# NPM_TRUSTME_CHROME_USER_DATA_DIR=/path/to/Chrome/User Data
+# NPM_TRUSTME_CHROME_PATH=/path/to/Chrome
 ```
 
 ## Notes
+- Login modes:
+  - `auto` (default): uses credential providers to log in.
+  - `browser`: uses an existing Chrome profile/session and waits for manual login if needed.
 - If the workflow filename includes a path, it is normalized to just the filename.
 - `publishing-access` options:
   - `disallow-tokens` (recommended for OIDC-only)

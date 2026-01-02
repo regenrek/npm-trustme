@@ -119,6 +119,8 @@ describe('credential providers', () => {
       opItem: 'Item'
     }
     const resolved = await resolveCredentials(options, false, createLogger(false))
+    expect(resolved).not.toBeNull()
+    if (!resolved) throw new Error('Expected credentials to resolve')
     expect(resolved.username).toBe('direct-user')
     expect(resolved.password).toBe('from-op')
   })

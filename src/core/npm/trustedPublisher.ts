@@ -26,17 +26,34 @@ export interface EnsureOptions {
   dryRun?: boolean
   timeoutMs?: number
   screenshotDir?: string
+  loginMode?: 'auto' | 'browser'
+  headless?: boolean
 }
 
 const LOGIN_URL = 'https://www.npmjs.com/login'
 const PROFILE_URL = 'https://www.npmjs.com/settings/profile'
 
-export async function ensureLoggedIn(page: Page, creds: NpmCredentials, logger: Logger, options: EnsureOptions): Promise<void> {
+export async function ensureLoggedIn(page: Page, creds: NpmCredentials | null, logger: Logger, options: EnsureOptions): Promise<void> {
   const loggedIn = await checkLoggedIn(page)
   if (loggedIn) {
     logger.info('Already logged in to npm.')
     return
   }
+
+  if (!creds) {
+    if (options.loginMode !== 'browser') {
+      throw new Error('Missing npm username/password (use --op-* refs, --username/--password, or env vars).')
+    }
+    if (options.headless) {
+      throw new Error('login-mode browser requires headless=false to complete login manually.')
+    }
+    logger.info('Please complete npm login in the browser window...')
+    await page.goto(LOGIN_URL, { waitUntil: 'domcontentloaded' })
+    await waitForManualLogin(page, options)
+    logger.success('Logged in to npm.')
+    return
+  }
+
   logger.info('Logging in to npm...')
   await page.goto(LOGIN_URL, { waitUntil: 'domcontentloaded' })
   await fillLoginForm(page, creds, logger, options)
@@ -171,6 +188,21 @@ async function fillLoginForm(page: Page, creds: NpmCredentials, logger: Logger, 
 
 async function waitForLogin(page: Page, options: EnsureOptions): Promise<void> {
   const timeout = options.timeoutMs ?? 60000
+  const start = Date.now()
+  while (Date.now() - start < timeout) {
+    if (!page.url().includes('/login')) {
+      const loggedIn = await checkLoggedIn(page)
+      if (loggedIn) return
+    }
+    await page.waitForTimeout(1000)
+  }
+  const screenshot = await captureScreenshot(page, options.screenshotDir, 'login-timeout')
+  const hint = screenshot ? ` (screenshot: ${screenshot})` : ''
+  throw new Error(`Timed out waiting for npm login${hint}`)
+}
+
+async function waitForManualLogin(page: Page, options: EnsureOptions): Promise<void> {
+  const timeout = options.timeoutMs ?? 120000
   const start = Date.now()
   while (Date.now() - start < timeout) {
     if (!page.url().includes('/login')) {

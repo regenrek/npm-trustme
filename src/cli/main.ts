@@ -23,6 +23,7 @@ interface CommonOptions {
   publisher?: string
   maintainer?: string
   publishingAccess?: string
+  loginMode?: string
   headless?: boolean
   slowMo?: number
   timeout?: number
@@ -30,6 +31,10 @@ interface CommonOptions {
   screenshotDir?: string
   verbose?: boolean
   autoRepo?: boolean
+  chromeProfile?: string
+  chromeProfileDir?: string
+  chromeUserDataDir?: string
+  chromePath?: string
   username?: string
   password?: string
   otp?: string
@@ -63,6 +68,7 @@ const commonArgs = {
   publisher: { type: 'string', description: 'Publisher type: github|gitlab' },
   maintainer: { type: 'string', description: 'Maintainer (optional)' },
   'publishing-access': { type: 'string', description: 'disallow-tokens|allow-bypass-token|skip' },
+  'login-mode': { type: 'string', description: 'Login mode: auto|browser (browser uses existing session/manual login)' },
   headless: { type: 'boolean', description: 'Run browser headless' },
   'slow-mo': { type: 'string', description: 'Slow down Playwright actions (ms)' },
   timeout: { type: 'string', description: 'Timeout in ms for actions' },
@@ -71,6 +77,10 @@ const commonArgs = {
   verbose: { type: 'boolean', description: 'Verbose output' },
   'auto-repo': { type: 'boolean', description: 'Infer owner/repo from git remote' },
   'env-file': { type: 'string', description: 'Path to .env file (default: ./.env)' },
+  'chrome-profile': { type: 'string', description: 'Chrome profile name (e.g., Default, Profile 1)' },
+  'chrome-profile-dir': { type: 'string', description: 'Full path to Chrome profile directory' },
+  'chrome-user-data-dir': { type: 'string', description: 'Chrome user data directory' },
+  'chrome-path': { type: 'string', description: 'Path to Chrome/Chromium binary' },
   username: { type: 'string', description: 'npm username/email (discouraged; prefer 1Password)' },
   password: { type: 'string', description: 'npm password (discouraged; prefer 1Password)' },
   otp: { type: 'string', description: 'npm 2FA code' },
@@ -124,22 +134,19 @@ runMain(main)
 async function runCheck(options: CommonOptions): Promise<void> {
   const logger = createLogger(Boolean(options.verbose))
   const target = resolveTarget(options)
-  const creds = await resolveCredentials(resolveCredentialOptions(options), false, logger)
-  const session = await launchBrowser({
-    headless: Boolean(options.headless),
-    slowMo: options.slowMo,
-    storageStatePath: options.storage,
-    screenshotDir: options.screenshotDir
-  })
+  const credentialOptions = resolveCredentialOptions(options)
+  const loginMode = resolveLoginMode(options, credentialOptions)
+  const creds = await resolveCredentials(credentialOptions, false, logger, loginMode !== 'auto')
+  const session = await launchBrowser(buildBrowserOptions(options))
 
   try {
-    await ensureLoggedIn(session.page, creds, logger, buildEnsureOptions(options))
+    await ensureLoggedIn(session.page, creds, logger, buildEnsureOptions(options, loginMode))
     const status = await ensureTrustedPublisher(session.page, target, logger, {
-      ...buildEnsureOptions(options),
+      ...buildEnsureOptions(options, loginMode),
       dryRun: true
     })
     const accessStatus = await ensurePublishingAccess(session.page, target, logger, {
-      ...buildEnsureOptions(options),
+      ...buildEnsureOptions(options, loginMode),
       dryRun: true
     })
     if (status === 'exists' && accessStatus === 'ok') {
@@ -158,22 +165,19 @@ async function runCheck(options: CommonOptions): Promise<void> {
 async function runEnsure(options: CommonOptions & { dryRun?: boolean }): Promise<void> {
   const logger = createLogger(Boolean(options.verbose))
   const target = resolveTarget(options)
-  const creds = await resolveCredentials(resolveCredentialOptions(options), true, logger)
-  const session = await launchBrowser({
-    headless: Boolean(options.headless),
-    slowMo: options.slowMo,
-    storageStatePath: options.storage,
-    screenshotDir: options.screenshotDir
-  })
+  const credentialOptions = resolveCredentialOptions(options)
+  const loginMode = resolveLoginMode(options, credentialOptions)
+  const creds = await resolveCredentials(credentialOptions, true, logger, loginMode !== 'auto')
+  const session = await launchBrowser(buildBrowserOptions(options))
 
   try {
-    await ensureLoggedIn(session.page, creds, logger, buildEnsureOptions(options))
+    await ensureLoggedIn(session.page, creds, logger, buildEnsureOptions(options, loginMode))
     const status = await ensureTrustedPublisher(session.page, target, logger, {
-      ...buildEnsureOptions(options),
+      ...buildEnsureOptions(options, loginMode),
       dryRun: options.dryRun
     })
     const accessStatus = await ensurePublishingAccess(session.page, target, logger, {
-      ...buildEnsureOptions(options),
+      ...buildEnsureOptions(options, loginMode),
       dryRun: options.dryRun
     })
     if (status === 'dry-run' || accessStatus === 'dry-run') {
@@ -195,6 +199,7 @@ function normalizeArgs(raw: Record<string, unknown>): CommonOptions {
     publisher: stringArg(raw.publisher),
     maintainer: stringArg(raw.maintainer),
     publishingAccess: stringArg((raw as any)['publishing-access']),
+    loginMode: stringArg((raw as any)['login-mode']),
     headless: Boolean(raw.headless),
     slowMo: numberArg((raw as any)['slow-mo']),
     timeout: numberArg(raw.timeout),
@@ -202,6 +207,10 @@ function normalizeArgs(raw: Record<string, unknown>): CommonOptions {
     screenshotDir: stringArg((raw as any)['screenshot-dir']),
     verbose: Boolean(raw.verbose),
     autoRepo: Boolean((raw as any)['auto-repo']),
+    chromeProfile: stringArg((raw as any)['chrome-profile']),
+    chromeProfileDir: stringArg((raw as any)['chrome-profile-dir']),
+    chromeUserDataDir: stringArg((raw as any)['chrome-user-data-dir']),
+    chromePath: stringArg((raw as any)['chrome-path']),
     username: stringArg(raw.username),
     password: stringArg(raw.password),
     otp: stringArg(raw.otp),
@@ -291,10 +300,12 @@ function resolveCredentialOptions(options: CommonOptions) {
   }
 }
 
-function buildEnsureOptions(options: CommonOptions) {
+function buildEnsureOptions(options: CommonOptions, loginMode: LoginMode) {
   return {
     timeoutMs: options.timeout,
-    screenshotDir: options.screenshotDir
+    screenshotDir: options.screenshotDir,
+    loginMode,
+    headless: Boolean(options.headless)
   }
 }
 
@@ -334,6 +345,66 @@ function normalizePublishingAccess(value?: string): PublishingAccess {
   if (normalized === 'allow-bypass-token' || normalized === 'allow-bypass') return 'allow-bypass-token'
   if (normalized === 'skip') return 'skip'
   return 'disallow-tokens'
+}
+
+type LoginMode = 'auto' | 'browser'
+
+function resolveLoginMode(options: CommonOptions, credentialOptions: ReturnType<typeof resolveCredentialOptions>): LoginMode {
+  const env = process.env
+  const raw = (options.loginMode || env.NPM_TRUSTME_LOGIN_MODE || '').toLowerCase()
+  if (raw === 'browser' || raw === 'manual') return 'browser'
+
+  if (hasBrowserProfile(options) && !hasCredentialConfig(credentialOptions)) {
+    return 'browser'
+  }
+  return 'auto'
+}
+
+function hasBrowserProfile(options: CommonOptions): boolean {
+  const env = process.env
+  return Boolean(
+    options.chromeProfile ||
+    options.chromeProfileDir ||
+    options.chromeUserDataDir ||
+    env.NPM_TRUSTME_CHROME_PROFILE ||
+    env.NPM_TRUSTME_CHROME_PROFILE_DIR ||
+    env.NPM_TRUSTME_CHROME_USER_DATA_DIR
+  )
+}
+
+function hasCredentialConfig(options: ReturnType<typeof resolveCredentialOptions>): boolean {
+  return Boolean(
+    options.username ||
+      options.password ||
+      options.otp ||
+      options.opUsername ||
+      options.opPassword ||
+      options.opOtp ||
+      options.opVault ||
+      options.opItem ||
+      options.bwItem ||
+      options.bwSession ||
+      options.lpassItem ||
+      options.lpassOtpField ||
+      options.kpxDb ||
+      options.kpxEntry ||
+      options.kpxKeyfile ||
+      options.kpxPassword
+  )
+}
+
+function buildBrowserOptions(options: CommonOptions) {
+  const env = process.env
+  return {
+    headless: Boolean(options.headless),
+    slowMo: options.slowMo,
+    storageStatePath: options.storage,
+    screenshotDir: options.screenshotDir,
+    chromeProfile: options.chromeProfile || env.NPM_TRUSTME_CHROME_PROFILE,
+    chromeProfileDir: options.chromeProfileDir || env.NPM_TRUSTME_CHROME_PROFILE_DIR,
+    chromeUserDataDir: options.chromeUserDataDir || env.NPM_TRUSTME_CHROME_USER_DATA_DIR,
+    chromePath: options.chromePath || env.NPM_TRUSTME_CHROME_PATH
+  }
 }
 
 function preloadEnv() {

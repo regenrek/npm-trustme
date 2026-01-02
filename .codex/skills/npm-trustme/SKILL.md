@@ -65,3 +65,5 @@ Other providers (flags or envs):
 
 - `--env-file` can load a specific `.env` path.
 - `--storage` can persist Playwright storage state for faster re-runs.
+- `--login-mode browser` skips credential providers and waits for manual login.
+- Chrome profile reuse (manual session): `--chrome-profile` / `--chrome-profile-dir` / `--chrome-user-data-dir` / `--chrome-path`.
