@@ -1,0 +1,143 @@
+name: CLI Tests
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'package.json'
+      - '.github/workflows/cli-test.yml'
+      - 'pnpm-lock.yaml'
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'package.json'
+      - '.github/workflows/cli-test.yml'
+      - 'pnpm-lock.yaml'
+
+jobs:
+  test:
+    name: Test CLI (${{ matrix.os }}, Node ${{ matrix.node-version }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        node-version: [18.x, 20.x, 22.x]
+        # Skip some combinations to reduce CI time
+        exclude:
+          - os: macos-latest
+            node-version: 18.x
+          - os: windows-latest
+            node-version: 18.x
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: 10.17.1
+          run_install: false
+
+      - name: Setup Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'pnpm'
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Get pnpm store directory
+        id: pnpm-cache
+        shell: bash
+        run: |
+          echo "STORE_PATH=$(pnpm store path)" >> $GITHUB_OUTPUT
+
+      - name: Setup pnpm cache
+        uses: actions/cache@v3
+        with:
+          path: ${{ steps.pnpm-cache.outputs.STORE_PATH }}
+          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-store-
+
+      - name: Install dependencies
+        run: |
+          if [ -f "pnpm-lock.yaml" ]; then
+            pnpm install --frozen-lockfile
+          else
+            pnpm install --no-frozen-lockfile
+          fi
+        shell: bash
+
+      - name: Run type checking
+        run: pnpm exec tsc --noEmit
+
+      - name: Run tests (Node 18.x, no coverage)
+        if: matrix.node-version == '18.x'
+        run: pnpm test
+        env:
+          CI: true
+
+      - name: Run tests with coverage
+        if: matrix.node-version != '18.x'
+        run: pnpm run coverage
+        env:
+          CI: true
+
+      - name: Upload coverage reports
+        if: matrix.os == 'ubuntu-latest' && matrix.node-version == '20.x'
+        uses: codecov/codecov-action@v3
+        with:
+          directory: ./coverage
+          flags: npm-trustme
+          name: npm-trustme-coverage
+          fail_ci_if_error: false
+
+  build-check:
+    name: Build Check
+    runs-on: ubuntu-latest
+    needs: test
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: 10.17.1
+          run_install: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+          cache: 'pnpm'
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: |
+          if [ -f "pnpm-lock.yaml" ]; then
+            pnpm install --frozen-lockfile
+          else
+            pnpm install --no-frozen-lockfile
+          fi
+
+      - name: Build CLI
+        run: pnpm run build
+
+      - name: Check build output
+        run: |
+          echo "Checking build artifacts..."
+          ls -la dist/
+          
+          # Test that the built package exists and has expected files
+          test -f dist/main.js && echo "✓ main.js exists"
+          test -f dist/main.d.ts && echo "✓ main.d.ts exists"
+          
+          # Quick syntax check (import would run CLI as side-effect)
+          node --check dist/main.js && echo "✓ Syntax check passed"
