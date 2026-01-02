@@ -107,3 +107,14 @@ NPM_TRUSTME_OP_ITEM=npmjs.com
 - The script never prints secrets; screenshots are saved only on errors when `--screenshot-dir` is provided.
 - To add a new password manager, implement a `CredentialProvider` in `src/core/credentials/providers` and register it in `src/core/credentials/index.ts`.
 - Password manager providers supported out of the box: 1Password, Bitwarden, LastPass, KeePassXC.
+
+## Codex Skill
+This repo ships a Codex skill at `.codex/skills/npm-trustme`.
+
+Copy it into a project so agents can use this repo correctly:
+```bash
+mkdir -p /path/to/your/repo/.codex/skills
+cp -R .codex/skills/npm-trustme /path/to/your/repo/.codex/skills/
+```
+
+Trigger it in prompts with `npm-trustme` or `$npm-trustme`.
