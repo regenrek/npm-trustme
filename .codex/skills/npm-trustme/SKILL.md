@@ -27,23 +27,23 @@ Run checks or ensure publishing access without manual browser steps.
 Check:
 ```
 npx npm-trustme check \
-  --package codex-1up \
-  --owner regenrek \
-  --repo codex-1up \
-  --workflow npm-release.yml \
-  --publisher github \
-  --publishing-access disallow-tokens
+  --package <PACKAGE_NAME> \
+  --owner <GITHUB_OWNER> \
+  --repo <GITHUB_REPO> \
+  --workflow <WORKFLOW_FILE> \
+  --publisher <PUBLISHER> \
+  --publishing-access <PUBLISHING_ACCESS>
 ```
 
 Ensure (create if missing):
 ```
 npx npm-trustme ensure \
-  --package codex-1up \
-  --owner regenrek \
-  --repo codex-1up \
-  --workflow npm-release.yml \
-  --publisher github \
-  --publishing-access disallow-tokens
+  --package <PACKAGE_NAME> \
+  --owner <GITHUB_OWNER> \
+  --repo <GITHUB_REPO> \
+  --workflow <WORKFLOW_FILE> \
+  --publisher <PUBLISHER> \
+  --publishing-access <PUBLISHING_ACCESS>
 ```
 
 ## Credentials
