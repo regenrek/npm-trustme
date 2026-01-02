@@ -1,8 +1,8 @@
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright'
 import { existsSync } from 'node:fs'
 import { mkdir, writeFile } from 'node:fs/promises'
-import os from 'node:os'
 import { basename, dirname, resolve } from 'node:path'
+import { defaultChromeUserDataDir } from './chromeProfiles.js'
 
 export interface BrowserOptions {
   headless: boolean
@@ -13,6 +13,8 @@ export interface BrowserOptions {
   chromeProfileDir?: string
   chromeUserDataDir?: string
   chromePath?: string
+  chromeCdpUrl?: string
+  chromeDebugPort?: number
 }
 
 export interface BrowserSession {
@@ -20,24 +22,45 @@ export interface BrowserSession {
   context: BrowserContext
   page: Page
   isPersistent?: boolean
+  ownsBrowser?: boolean
 }
 
 export async function launchBrowser(options: BrowserOptions): Promise<BrowserSession> {
+  const cdpUrl = resolveCdpUrl(options)
+  if (cdpUrl) {
+    const browser = await chromium.connectOverCDP(cdpUrl)
+    const context = browser.contexts()[0] ?? (await browser.newContext())
+    const page = context.pages()[0] ?? (await context.newPage())
+    return { browser, context, page, ownsBrowser: false }
+  }
+
   const persistent = resolvePersistentProfile(options)
   if (persistent) {
-    const context = await chromium.launchPersistentContext(persistent.userDataDir, {
-      headless: options.headless,
-      slowMo: options.slowMo,
-      args: persistent.args,
-      channel: options.chromePath ? undefined : 'chrome',
-      executablePath: options.chromePath
-    })
+    let context: BrowserContext
+    try {
+      context = await chromium.launchPersistentContext(persistent.userDataDir, {
+        headless: options.headless,
+        slowMo: options.slowMo,
+        args: persistent.args,
+        channel: options.chromePath ? undefined : 'chrome',
+        executablePath: options.chromePath
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      if (message.includes('ProcessSingleton')) {
+        throw new Error(
+          'Chrome profile is already in use. Close Chrome or connect via --chrome-cdp-url/--chrome-debug-port.'
+        )
+      }
+      throw error
+    }
     const page = context.pages()[0] ?? (await context.newPage())
     return {
       browser: context.browser(),
       context,
       page,
-      isPersistent: true
+      isPersistent: true,
+      ownsBrowser: true
     }
   }
 
@@ -50,7 +73,7 @@ export async function launchBrowser(options: BrowserOptions): Promise<BrowserSes
     storageState: options.storageStatePath
   })
   const page = await context.newPage()
-  return { browser, context, page }
+  return { browser, context, page, ownsBrowser: true }
 }
 
 export async function saveStorageState(context: BrowserContext, storageStatePath?: string): Promise<void> {
@@ -71,9 +94,17 @@ export async function captureScreenshot(page: Page, dir: string | undefined, lab
 
 export async function closeBrowser(session: BrowserSession): Promise<void> {
   await session.context.close().catch(() => undefined)
-  if (session.browser) {
+  if (session.browser && session.ownsBrowser !== false) {
     await session.browser.close().catch(() => undefined)
   }
+}
+
+function resolveCdpUrl(options: BrowserOptions): string | null {
+  if (options.chromeCdpUrl) return options.chromeCdpUrl
+  if (options.chromeDebugPort) {
+    return `http://127.0.0.1:${options.chromeDebugPort}`
+  }
+  return null
 }
 
 function resolvePersistentProfile(options: BrowserOptions): { userDataDir: string; args: string[] } | null {
@@ -108,18 +139,4 @@ function resolvePersistentProfile(options: BrowserOptions): { userDataDir: strin
   return { userDataDir: resolvedUserDataDir, args }
 }
 
-function defaultChromeUserDataDir(): string | undefined {
-  const home = os.homedir()
-  if (process.platform === 'darwin') {
-    return resolve(home, 'Library/Application Support/Google/Chrome')
-  }
-  if (process.platform === 'win32') {
-    const local = process.env.LOCALAPPDATA || process.env.USERPROFILE
-    if (!local) return undefined
-    return resolve(local, 'Google/Chrome/User Data')
-  }
-  const linuxDefault = resolve(home, '.config/google-chrome')
-  if (existsSync(linuxDefault)) return linuxDefault
-  const chromium = resolve(home, '.config/chromium')
-  return existsSync(chromium) ? chromium : linuxDefault
-}
+// defaultChromeUserDataDir moved to chromeProfiles.ts

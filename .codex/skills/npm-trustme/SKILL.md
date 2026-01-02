@@ -67,3 +67,5 @@ Other providers (flags or envs):
 - `--storage` can persist Playwright storage state for faster re-runs.
 - `--login-mode browser` skips credential providers and waits for manual login.
 - Chrome profile reuse (manual session): `--chrome-profile` / `--chrome-profile-dir` / `--chrome-user-data-dir` / `--chrome-path`.
+- Connect to an existing Chrome: `--chrome-cdp-url` or `--chrome-debug-port` (Chrome must be launched with remote debugging).
+- Auto profile detection uses `chrome-cookies-secure`; if native bindings fail, rebuild them.

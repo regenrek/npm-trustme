@@ -5,6 +5,7 @@ import path from 'node:path'
 import { execSync } from 'node:child_process'
 import { createLogger } from '../core/logger.js'
 import { launchBrowser, saveStorageState, closeBrowser } from '../core/browser/session.js'
+import { resolveChromeProfileAuto } from '../core/browser/chromeProfiles.js'
 import {
   ensureLoggedIn,
   ensureTrustedPublisher,
@@ -35,6 +36,8 @@ interface CommonOptions {
   chromeProfileDir?: string
   chromeUserDataDir?: string
   chromePath?: string
+  chromeCdpUrl?: string
+  chromeDebugPort?: number
   username?: string
   password?: string
   otp?: string
@@ -81,6 +84,8 @@ const commonArgs = {
   'chrome-profile-dir': { type: 'string', description: 'Full path to Chrome profile directory' },
   'chrome-user-data-dir': { type: 'string', description: 'Chrome user data directory' },
   'chrome-path': { type: 'string', description: 'Path to Chrome/Chromium binary' },
+  'chrome-cdp-url': { type: 'string', description: 'Connect to existing Chrome via CDP (e.g., http://127.0.0.1:9222)' },
+  'chrome-debug-port': { type: 'string', description: 'Connect to Chrome DevTools port (e.g., 9222)' },
   username: { type: 'string', description: 'npm username/email (discouraged; prefer 1Password)' },
   password: { type: 'string', description: 'npm password (discouraged; prefer 1Password)' },
   otp: { type: 'string', description: 'npm 2FA code' },
@@ -137,7 +142,7 @@ async function runCheck(options: CommonOptions): Promise<void> {
   const credentialOptions = resolveCredentialOptions(options)
   const loginMode = resolveLoginMode(options, credentialOptions)
   const creds = await resolveCredentials(credentialOptions, false, logger, loginMode !== 'auto')
-  const session = await launchBrowser(buildBrowserOptions(options))
+  const session = await launchBrowser(await resolveBrowserOptions(options, loginMode, logger))
 
   try {
     await ensureLoggedIn(session.page, creds, logger, buildEnsureOptions(options, loginMode))
@@ -167,8 +172,8 @@ async function runEnsure(options: CommonOptions & { dryRun?: boolean }): Promise
   const target = resolveTarget(options)
   const credentialOptions = resolveCredentialOptions(options)
   const loginMode = resolveLoginMode(options, credentialOptions)
-  const creds = await resolveCredentials(credentialOptions, true, logger, loginMode !== 'auto')
-  const session = await launchBrowser(buildBrowserOptions(options))
+  const creds = await resolveCredentials(credentialOptions, loginMode === 'auto', logger, loginMode !== 'auto')
+  const session = await launchBrowser(await resolveBrowserOptions(options, loginMode, logger))
 
   try {
     await ensureLoggedIn(session.page, creds, logger, buildEnsureOptions(options, loginMode))
@@ -211,6 +216,8 @@ function normalizeArgs(raw: Record<string, unknown>): CommonOptions {
     chromeProfileDir: stringArg((raw as any)['chrome-profile-dir']),
     chromeUserDataDir: stringArg((raw as any)['chrome-user-data-dir']),
     chromePath: stringArg((raw as any)['chrome-path']),
+    chromeCdpUrl: stringArg((raw as any)['chrome-cdp-url']),
+    chromeDebugPort: numberArg((raw as any)['chrome-debug-port']),
     username: stringArg(raw.username),
     password: stringArg(raw.password),
     otp: stringArg(raw.otp),
@@ -366,9 +373,13 @@ function hasBrowserProfile(options: CommonOptions): boolean {
     options.chromeProfile ||
     options.chromeProfileDir ||
     options.chromeUserDataDir ||
+    options.chromeCdpUrl ||
+    options.chromeDebugPort ||
     env.NPM_TRUSTME_CHROME_PROFILE ||
     env.NPM_TRUSTME_CHROME_PROFILE_DIR ||
-    env.NPM_TRUSTME_CHROME_USER_DATA_DIR
+    env.NPM_TRUSTME_CHROME_USER_DATA_DIR ||
+    env.NPM_TRUSTME_CHROME_CDP_URL ||
+    env.NPM_TRUSTME_CHROME_DEBUG_PORT
   )
 }
 
@@ -393,9 +404,9 @@ function hasCredentialConfig(options: ReturnType<typeof resolveCredentialOptions
   )
 }
 
-function buildBrowserOptions(options: CommonOptions) {
+async function resolveBrowserOptions(options: CommonOptions, loginMode: LoginMode, logger: ReturnType<typeof createLogger>) {
   const env = process.env
-  return {
+  const resolved = {
     headless: Boolean(options.headless),
     slowMo: options.slowMo,
     storageStatePath: options.storage,
@@ -403,8 +414,37 @@ function buildBrowserOptions(options: CommonOptions) {
     chromeProfile: options.chromeProfile || env.NPM_TRUSTME_CHROME_PROFILE,
     chromeProfileDir: options.chromeProfileDir || env.NPM_TRUSTME_CHROME_PROFILE_DIR,
     chromeUserDataDir: options.chromeUserDataDir || env.NPM_TRUSTME_CHROME_USER_DATA_DIR,
-    chromePath: options.chromePath || env.NPM_TRUSTME_CHROME_PATH
+    chromePath: options.chromePath || env.NPM_TRUSTME_CHROME_PATH,
+    chromeCdpUrl: options.chromeCdpUrl || env.NPM_TRUSTME_CHROME_CDP_URL,
+    chromeDebugPort: options.chromeDebugPort || numberArg(env.NPM_TRUSTME_CHROME_DEBUG_PORT)
   }
+
+  if (loginMode !== 'browser') {
+    return resolved
+  }
+  if (resolved.chromeCdpUrl || resolved.chromeDebugPort) {
+    return resolved
+  }
+  if (resolved.chromeProfile || resolved.chromeProfileDir) {
+    return resolved
+  }
+
+  const detection = await resolveChromeProfileAuto({
+    userDataDir: resolved.chromeUserDataDir,
+    logger
+  })
+  if (detection.profile) {
+    resolved.chromeProfile = detection.profile
+    if (detection.reason === 'cookies') {
+      logger.info(`Auto-selected Chrome profile "${detection.profile}" based on npm cookies.`)
+    } else {
+      logger.info(`Using last active Chrome profile "${detection.profile}".`)
+    }
+  } else {
+    logger.warn('Unable to auto-detect Chrome profile; pass --chrome-profile or --chrome-profile-dir.')
+  }
+
+  return resolved
 }
 
 function preloadEnv() {

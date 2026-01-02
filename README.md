@@ -103,12 +103,17 @@ NPM_TRUSTME_OP_ITEM=npmjs.com
 # NPM_TRUSTME_CHROME_PROFILE_DIR=/path/to/Chrome/Profile 1
 # NPM_TRUSTME_CHROME_USER_DATA_DIR=/path/to/Chrome/User Data
 # NPM_TRUSTME_CHROME_PATH=/path/to/Chrome
+# NPM_TRUSTME_CHROME_CDP_URL=http://127.0.0.1:9222
+# NPM_TRUSTME_CHROME_DEBUG_PORT=9222
 ```
 
 ## Notes
 - Login modes:
   - `auto` (default): uses credential providers to log in.
   - `browser`: uses an existing Chrome profile/session and waits for manual login if needed.
+- Chrome profile reuse: `--chrome-profile` / `--chrome-profile-dir` / `--chrome-user-data-dir` / `--chrome-path`.
+- Connect to an existing Chrome: `--chrome-cdp-url` or `--chrome-debug-port` (Chrome must be launched with remote debugging).
+- Auto profile detection uses `chrome-cookies-secure`. If it fails due to native bindings, run `pnpm approve-builds` and `pnpm rebuild chrome-cookies-secure sqlite3 keytar`.
 - If the workflow filename includes a path, it is normalized to just the filename.
 - `publishing-access` options:
   - `disallow-tokens` (recommended for OIDC-only)

@@ -143,7 +143,28 @@ export async function ensurePublishingAccess(
 
 async function checkLoggedIn(page: Page): Promise<boolean> {
   await page.goto(PROFILE_URL, { waitUntil: 'domcontentloaded' })
-  return !page.url().includes('/login')
+  if (page.url().includes('/login')) return false
+
+  const loginSelectors = [
+    'input[name="username"]',
+    'input#username',
+    'input[autocomplete="username"]',
+    'input[type="password"]'
+  ]
+  for (const selector of loginSelectors) {
+    const locator = page.locator(selector).first()
+    if (await locator.isVisible({ timeout: 1000 }).catch(() => false)) return false
+  }
+
+  const loginButtons = [
+    page.getByRole('button', { name: /sign in|log in/i }).first(),
+    page.getByRole('link', { name: /sign in|log in/i }).first()
+  ]
+  for (const locator of loginButtons) {
+    if (await locator.isVisible({ timeout: 1000 }).catch(() => false)) return false
+  }
+
+  return true
 }
 
 async function fillLoginForm(page: Page, creds: NpmCredentials, logger: Logger, options: EnsureOptions): Promise<void> {
