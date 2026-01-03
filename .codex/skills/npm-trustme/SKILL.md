@@ -21,7 +21,11 @@ Automate npm Trusted Publisher setup in the npm web UI. Requires a one-time WebA
 
 - Required: `--package`, `--owner`, `--repo`, `--workflow`
 - Optional: `--publishing-access`, `--environment`, `--maintainer`
-- In a git repo, `--auto-repo` can infer owner/repo from the remote.
+
+Default inference:
+- package: `package.json#name`
+- owner/repo: `git remote origin`
+- workflow: `.github/workflows/npm-release.yml` or the only workflow file
 
 ## Examples
 

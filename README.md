@@ -77,6 +77,12 @@ npx npm-trustme ensure \
 npx npm-trustme check
 ```
 
+### Auto-detection (default)
+If you omit flags, npm-trustme will infer:
+- `--package` from `package.json#name`
+- `--owner`/`--repo` from `git remote origin`
+- `--workflow` from `.github/workflows/npm-release.yml` (or the only workflow file)
+
 ## Environment Variables
 ```bash
 NPM_TRUSTME_PACKAGE=<PACKAGE_NAME>

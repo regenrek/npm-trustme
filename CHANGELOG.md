@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- Auto-detection for package, repo, and workflow when flags are omitted.
+
 ## [0.1.4]
 
 ### Added

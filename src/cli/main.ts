@@ -1,9 +1,10 @@
 #!/usr/bin/env node
-import { defineCommand, runMain } from 'citty'
+import { defineCommand, renderUsage, runMain, type ArgsDef, type CommandDef } from 'citty'
 import { config as loadEnv } from 'dotenv'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { existsSync } from 'node:fs'
-import { mkdir, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { execSync, spawn } from 'node:child_process'
 import { createLogger } from '../core/logger.js'
 import { launchBrowser, saveStorageState, closeBrowser } from '../core/browser/session.js'
@@ -26,6 +27,7 @@ import {
   resolveInstallCommand,
   resolveTagPattern
 } from '../core/workflow/npmRelease.js'
+import { inferPackageName, inferWorkflowFile, parseGitHubRemote } from '../core/targets/infer.js'
 
 interface CommonOptions {
   package?: string
@@ -210,7 +212,7 @@ const main = defineCommand({
   }
 })
 
-runMain(main)
+void runCli()
 
 async function runCheck(options: CommonOptions): Promise<void> {
   const logger = createLogger(Boolean(options.verbose))
@@ -499,7 +501,7 @@ function normalizeArgs(raw: Record<string, unknown>): CommonOptions {
     storage: stringArg(raw.storage),
     screenshotDir: stringArg((raw as any)['screenshot-dir']),
     verbose: Boolean(raw.verbose),
-    autoRepo: Boolean((raw as any)['auto-repo']),
+    autoRepo: boolArg((raw as any)['auto-repo']) ?? true,
     chromeProfile: stringArg((raw as any)['chrome-profile']),
     chromeProfileDir: stringArg((raw as any)['chrome-profile-dir']),
     chromeUserDataDir: stringArg((raw as any)['chrome-user-data-dir']),
@@ -535,13 +537,17 @@ function normalizeWorkflowArgs(raw: Record<string, unknown>): WorkflowInitOption
 
 function resolveTarget(options: CommonOptions): TrustedPublisherTarget {
   const env = process.env
-  const packageName = options.package || env.NPM_TRUSTME_PACKAGE
+  let packageName = options.package || env.NPM_TRUSTME_PACKAGE
   let owner = options.owner || env.NPM_TRUSTME_OWNER
   let repo = options.repo || env.NPM_TRUSTME_REPO
   let workflow = options.workflow || env.NPM_TRUSTME_WORKFLOW
   const environment = options.environment || env.NPM_TRUSTME_ENVIRONMENT
   const maintainer = options.maintainer || env.NPM_TRUSTME_MAINTAINER
   const publishingAccess = normalizePublishingAccess(options.publishingAccess || env.NPM_TRUSTME_PUBLISHING_ACCESS)
+
+  if (!packageName) {
+    packageName = inferPackageName(process.cwd()) ?? undefined
+  }
 
   if ((!owner || !repo) && options.autoRepo) {
     const inferred = inferGitHubRepo()
@@ -551,19 +557,34 @@ function resolveTarget(options: CommonOptions): TrustedPublisherTarget {
     }
   }
 
-  if (!packageName || !owner || !repo || !workflow) {
-    throw new Error('Missing required fields: --package, --owner, --repo, --workflow (or env equivalents).')
+  if (!workflow) {
+    workflow = inferWorkflowFile(process.cwd()) ?? undefined
   }
 
-  if (workflow.includes('/')) {
-    workflow = path.basename(workflow)
+  const missing: string[] = []
+  if (!packageName) missing.push('--package (or package.json#name)')
+  if (!owner) missing.push('--owner (or git remote origin)')
+  if (!repo) missing.push('--repo (or git remote origin)')
+  if (!workflow) missing.push('--workflow (or .github/workflows/npm-release.yml)')
+
+  if (missing.length) {
+    throw new Error(`Missing required fields: ${missing.join(', ')}.`)
+  }
+
+  const resolvedPackageName = packageName as string
+  const resolvedOwner = owner as string
+  const resolvedRepo = repo as string
+  let resolvedWorkflow = workflow as string
+
+  if (resolvedWorkflow.includes('/')) {
+    resolvedWorkflow = path.basename(resolvedWorkflow)
   }
 
   return {
-    packageName,
-    owner,
-    repo,
-    workflow,
+    packageName: resolvedPackageName,
+    owner: resolvedOwner,
+    repo: resolvedRepo,
+    workflow: resolvedWorkflow,
     environment,
     maintainer,
     publishingAccess
@@ -605,9 +626,7 @@ function inferGitHubRepo(): { owner: string; repo: string } | null {
     const url = execSync('git remote get-url origin', { stdio: ['ignore', 'pipe', 'ignore'] })
       .toString()
       .trim()
-    const match = url.match(/github\.com[:/](.+?)\/(.+?)(?:\.git)?$/)
-    if (!match) return null
-    return { owner: match[1], repo: match[2] }
+    return parseGitHubRemote(url)
   } catch {
     return null
   }
@@ -752,6 +771,43 @@ function preloadEnv() {
   }
 }
 
+async function runCli(): Promise<void> {
+  if (await handleSkillFlag()) {
+    return
+  }
+  await runMain(main, { showUsage: showUsageWithSkills })
+}
+
+async function showUsageWithSkills<T extends ArgsDef = ArgsDef>(
+  cmd: CommandDef<T>,
+  parent?: CommandDef<T>
+): Promise<void> {
+  const usage = await renderUsage(cmd, parent)
+  const extra = [
+    '',
+    'GLOBAL OPTIONS',
+    '  --skills  Show the npm-trustme Codex skill (AI agent workflows).',
+    '            Alias: --skill.'
+  ].join('\n')
+  process.stdout.write(`${usage}${extra}\n`)
+}
+
+async function handleSkillFlag(): Promise<boolean> {
+  if (!hasFlag('--skills') && !hasFlag('--skill')) {
+    return false
+  }
+
+  const skillPath = resolveSkillPath()
+  if (!existsSync(skillPath)) {
+    console.error(`Skill file not found at ${skillPath}.`)
+    process.exitCode = 1
+    return true
+  }
+  const contents = await readFile(skillPath, 'utf8')
+  process.stdout.write(contents.endsWith('\n') ? contents : `${contents}\n`)
+  return true
+}
+
 function findArgValue(flag: string): string | undefined {
   const argv = process.argv.slice(2)
   const direct = argv.find(arg => arg.startsWith(`${flag}=`))
@@ -762,6 +818,37 @@ function findArgValue(flag: string): string | undefined {
   const idx = argv.indexOf(flag)
   if (idx >= 0 && argv[idx + 1]) return argv[idx + 1]
   return undefined
+}
+
+function hasFlag(flag: string): boolean {
+  const argv = process.argv.slice(2)
+  const direct = argv.find(arg => arg.startsWith(`${flag}=`))
+  if (direct) {
+    const value = direct.split('=')[1]
+    if (!value) return false
+    return ['1', 'true', 'yes', 'on'].includes(value.trim().toLowerCase())
+  }
+  return argv.includes(flag)
+}
+
+function resolveSkillPath(): string {
+  const root = resolvePackageRoot()
+  return path.resolve(root, '.codex', 'skills', 'npm-trustme', 'SKILL.md')
+}
+
+function resolvePackageRoot(): string {
+  const startDir = path.dirname(fileURLToPath(import.meta.url))
+  let current = startDir
+  for (let i = 0; i < 6; i += 1) {
+    const candidate = path.resolve(current, 'package.json')
+    if (existsSync(candidate)) {
+      return current
+    }
+    const next = path.dirname(current)
+    if (next === current) break
+    current = next
+  }
+  return process.cwd()
 }
 
 function resolveImportCookies(options: CommonOptions, env: NodeJS.ProcessEnv, inlineCookies?: InlineCookieInput): boolean {
