@@ -16,8 +16,8 @@
   },
   "dependencies": {
     "@clack/prompts": "^0.11.0",
+    "@steipete/sweet-cookie": "^0.1.0",
     "citty": "^0.1.6",
-    "chrome-cookies-secure": "^3.0.0",
     "dotenv": "^16.4.5",
     "playwright": "^1.49.0"
   },
@@ -30,7 +30,7 @@
     "vitest": "^4.0.13"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=22"
   },
   "packageManager": "pnpm@10.25.0+sha512.5e82639027af37cf832061bcc6d639c219634488e0f2baebe785028a793de7b525ffcd3f7ff574f5e9860654e098fe852ba8ac5dd5cefe1767d23a020a92f501"
 }

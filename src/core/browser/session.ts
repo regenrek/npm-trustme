@@ -15,6 +15,7 @@ export interface BrowserOptions {
   chromePath?: string
   chromeCdpUrl?: string
   chromeDebugPort?: number
+  usePersistentProfile?: boolean
 }
 
 export interface BrowserSession {
@@ -30,11 +31,11 @@ export async function launchBrowser(options: BrowserOptions): Promise<BrowserSes
   if (cdpUrl) {
     const browser = await chromium.connectOverCDP(cdpUrl)
     const context = browser.contexts()[0] ?? (await browser.newContext())
-    const page = context.pages()[0] ?? (await context.newPage())
+    const page = await context.newPage()
     return { browser, context, page, ownsBrowser: false }
   }
 
-  const persistent = resolvePersistentProfile(options)
+  const persistent = options.usePersistentProfile === false ? null : resolvePersistentProfile(options)
   if (persistent) {
     let context: BrowserContext
     try {

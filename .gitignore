@@ -3,6 +3,7 @@ node_modules
 /.env
 /.DS_Store
 /.cache
+/.npm-trustme
 /playwright-report
 /test-results
 /coverage

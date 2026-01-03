@@ -68,10 +68,8 @@ export async function ensureTrustedPublisher(
   options: EnsureOptions
 ): Promise<'exists' | 'added' | 'dry-run'> {
   await page.goto(accessUrl(target.packageName), { waitUntil: 'domcontentloaded' })
-  if (page.url().includes('/login')) {
-    throw new Error('Not logged in (redirected to login).')
-  }
 
+  await waitForAccessReady(page, target.packageName, logger, options)
   await focusTrustedPublishersSection(page)
 
   const exists = await hasTrustedPublisher(page, target)
@@ -87,7 +85,15 @@ export async function ensureTrustedPublisher(
 
   logger.info('Adding trusted publisher...')
   await selectPublisherProvider(page, target.provider)
-  await fillTrustedPublisherForm(page, target)
+  try {
+    await waitForTrustedPublisherForm(page, logger, options)
+    await fillTrustedPublisherForm(page, target)
+  } catch (error) {
+    const screenshot = await captureScreenshot(page, options.screenshotDir, 'trusted-publisher-form')
+    const hint = screenshot ? ` (screenshot: ${screenshot})` : ''
+    const message = error instanceof Error ? error.message : String(error)
+    throw new Error(`${message}${hint}`)
+  }
   await clickSetupConnection(page)
 
   const confirmed = await waitForTrustedPublisher(page, target, options)
@@ -113,6 +119,7 @@ export async function ensurePublishingAccess(
   }
 
   await page.goto(accessUrl(target.packageName), { waitUntil: 'domcontentloaded' })
+  await waitForAccessReady(page, target.packageName, logger, options)
 
   const desiredLabel = accessLabel(target.publishingAccess)
   const radio = await findRadio(page, desiredLabel)
@@ -235,6 +242,89 @@ async function waitForManualLogin(page: Page, options: EnsureOptions): Promise<v
   const screenshot = await captureScreenshot(page, options.screenshotDir, 'login-timeout')
   const hint = screenshot ? ` (screenshot: ${screenshot})` : ''
   throw new Error(`Timed out waiting for npm login${hint}`)
+}
+
+async function waitForAccessReady(
+  page: Page,
+  packageName: string,
+  logger: Logger,
+  options: EnsureOptions
+): Promise<void> {
+  const timeout = options.timeoutMs ?? 120000
+  const start = Date.now()
+  let loginPrompted = false
+  let twoFactorPrompted = false
+  let lastNavigation = 0
+
+  while (Date.now() - start < timeout) {
+    if (page.url().includes('/login')) {
+      if (options.loginMode === 'browser' && !options.headless) {
+        if (!loginPrompted) {
+          logger.info('Please complete npm login in the browser window...')
+          loginPrompted = true
+        }
+        await page.waitForTimeout(1000)
+        continue
+      }
+      throw new Error('Not logged in (redirected to login).')
+    }
+
+    if (await isTwoFactorGate(page)) {
+      if (options.loginMode === 'browser' && !options.headless) {
+        await triggerSecurityKeyIfPresent(page, logger)
+        if (!twoFactorPrompted) {
+          logger.info('Complete npm 2FA in the browser window (security key or OTP).')
+          twoFactorPrompted = true
+        }
+        await page.waitForTimeout(1000)
+        continue
+      }
+      throw new Error('npm requires 2FA verification; rerun with --login-mode browser and headless=false.')
+    }
+
+    if (await isTrustedPublishersReady(page)) return
+
+    if (!isAccessUrl(page.url(), packageName) && Date.now() - lastNavigation > 5000) {
+      lastNavigation = Date.now()
+      await page.goto(accessUrl(packageName), { waitUntil: 'domcontentloaded' })
+      continue
+    }
+
+    await page.waitForTimeout(1000)
+  }
+
+  const screenshot = await captureScreenshot(page, options.screenshotDir, 'access-timeout')
+  const hint = screenshot ? ` (screenshot: ${screenshot})` : ''
+  const current = page.url()
+  throw new Error(`Timed out waiting for npm access page (current: ${current})${hint}`)
+}
+
+async function waitForTrustedPublisherForm(page: Page, logger: Logger, options: EnsureOptions): Promise<void> {
+  const timeout = options.timeoutMs ?? 60000
+  const start = Date.now()
+  let twoFactorPrompted = false
+  while (Date.now() - start < timeout) {
+    if (await isTwoFactorGate(page)) {
+      if (options.loginMode === 'browser' && !options.headless) {
+        await triggerSecurityKeyIfPresent(page, logger)
+        if (!twoFactorPrompted) {
+          logger.info('Waiting for npm 2FA to complete...')
+          twoFactorPrompted = true
+        }
+        await page.waitForTimeout(1000)
+        continue
+      }
+      throw new Error('npm requires 2FA verification; rerun with --login-mode browser and headless=false.')
+    }
+
+    const ownerField = page.getByRole('textbox', { name: /organization|owner|user/i }).first()
+    if (await ownerField.isVisible({ timeout: 1000 }).catch(() => false)) return
+    await page.waitForTimeout(500)
+  }
+
+  const screenshot = await captureScreenshot(page, options.screenshotDir, 'trusted-publisher-form-timeout')
+  const hint = screenshot ? ` (screenshot: ${screenshot})` : ''
+  throw new Error(`Timed out waiting for trusted publisher form${hint}`)
 }
 
 function accessUrl(pkg: string): string {
@@ -376,19 +466,40 @@ async function findButton(page: Page, patterns: RegExp[]): Promise<ReturnType<Pa
 
 async function fillByLabelAny(page: Page, labels: RegExp[], value: string): Promise<void> {
   for (const label of labels) {
-    const locator = page.getByLabel(label).first()
-    if (await locator.isVisible({ timeout: 2000 }).catch(() => false)) {
-      await locator.fill(value)
-      return
+    const candidates: Array<ReturnType<Page['locator']>> = [
+      page.getByRole('textbox', { name: label }).first(),
+      page.getByRole('combobox', { name: label }).first(),
+      page.getByLabel(label).first(),
+      page.getByPlaceholder(label).first()
+    ]
+    for (const locator of candidates) {
+      if (await locator.isVisible({ timeout: 1500 }).catch(() => false)) {
+        if (!(await isEditableLocator(locator))) {
+          continue
+        }
+        await locator.fill(value)
+        return
+      }
     }
   }
   throw new Error(`Unable to locate field for ${labels.map((l) => l.source).join(', ')}`)
 }
 
 async function fillOptionalByLabel(page: Page, label: RegExp, value: string): Promise<void> {
-  const locator = page.getByLabel(label).first()
-  if (await locator.isVisible({ timeout: 1500 }).catch(() => false)) {
-    await locator.fill(value)
+  const candidates: Array<ReturnType<Page['locator']>> = [
+    page.getByRole('textbox', { name: label }).first(),
+    page.getByRole('combobox', { name: label }).first(),
+    page.getByLabel(label).first(),
+    page.getByPlaceholder(label).first()
+  ]
+  for (const locator of candidates) {
+    if (await locator.isVisible({ timeout: 1500 }).catch(() => false)) {
+      if (!(await isEditableLocator(locator))) {
+        continue
+      }
+      await locator.fill(value)
+      return
+    }
   }
 }
 
@@ -398,5 +509,64 @@ async function textVisible(page: Page, text: string): Promise<boolean> {
     return await locator.isVisible({ timeout: 1000 })
   } catch {
     return false
+  }
+}
+
+async function isTwoFactorGate(page: Page): Promise<boolean> {
+  const signals: Array<ReturnType<Page['locator']>> = [
+    page.getByRole('heading', { name: /two[-\s]?factor/i }).first(),
+    page.getByRole('button', { name: /use security key|use passkey|use security/i }).first(),
+    page.getByRole('link', { name: /use password|unable to verify/i }).first(),
+    page.locator('input[autocomplete="one-time-code"]').first(),
+    page.locator('input[name="otp"]').first(),
+    page.locator('input#otp').first(),
+    page.locator('input[type="tel"]').first()
+  ]
+
+  for (const locator of signals) {
+    if (await locator.isVisible({ timeout: 800 }).catch(() => false)) return true
+  }
+  return false
+}
+
+async function isTrustedPublishersReady(page: Page): Promise<boolean> {
+  const tab = page.getByRole('tab', { name: /trusted publishers/i }).first()
+  if (await tab.isVisible({ timeout: 800 }).catch(() => false)) return true
+  const heading = page.getByRole('heading', { name: /trusted publishers/i }).first()
+  if (await heading.isVisible({ timeout: 800 }).catch(() => false)) return true
+  const ownerField = page.getByRole('textbox', { name: /organization|owner|user/i }).first()
+  if (await ownerField.isVisible({ timeout: 800 }).catch(() => false)) return true
+  return false
+}
+
+function isAccessUrl(currentUrl: string, packageName: string): boolean {
+  return currentUrl.includes(`/package/${packageName}/access`)
+}
+
+async function isEditableLocator(locator: ReturnType<Page['locator']>): Promise<boolean> {
+  try {
+    return await locator.evaluate((element) => {
+      const el = element as HTMLElement
+      const tag = el.tagName.toLowerCase()
+      if (tag === 'input' || tag === 'textarea' || tag === 'select') return true
+      if (el.isContentEditable) return true
+      const role = el.getAttribute('role')
+      if (role === 'textbox' || role === 'combobox') return true
+      return false
+    })
+  } catch {
+    return false
+  }
+}
+
+async function triggerSecurityKeyIfPresent(page: Page, logger: Logger): Promise<void> {
+  const button = page.getByRole('button', { name: /use security key|use passkey|use security/i }).first()
+  if (await button.isVisible({ timeout: 800 }).catch(() => false)) {
+    try {
+      await button.click()
+      logger.info('Triggered security key prompt.')
+    } catch {
+      // ignore click failures and keep waiting
+    }
   }
 }

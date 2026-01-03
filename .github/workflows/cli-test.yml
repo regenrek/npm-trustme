@@ -25,13 +25,7 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-        node-version: [18.x, 20.x, 22.x]
-        # Skip some combinations to reduce CI time
-        exclude:
-          - os: macos-latest
-            node-version: 18.x
-          - os: windows-latest
-            node-version: 18.x
+        node-version: [22.x, 24.x]
     
     steps:
       - name: Checkout code
@@ -76,20 +70,13 @@ jobs:
       - name: Run type checking
         run: pnpm exec tsc --noEmit
 
-      - name: Run tests (Node 18.x, no coverage)
-        if: matrix.node-version == '18.x'
-        run: pnpm test
-        env:
-          CI: true
-
       - name: Run tests with coverage
-        if: matrix.node-version != '18.x'
         run: pnpm run coverage
         env:
           CI: true
 
       - name: Upload coverage reports
-        if: matrix.os == 'ubuntu-latest' && matrix.node-version == '20.x'
+        if: matrix.os == 'ubuntu-latest' && matrix.node-version == '22.x'
         uses: codecov/codecov-action@v3
         with:
           directory: ./coverage
@@ -115,7 +102,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20.x
+          node-version: 22.x
           cache: 'pnpm'
           cache-dependency-path: pnpm-lock.yaml
 

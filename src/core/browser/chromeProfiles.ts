@@ -21,6 +21,12 @@ export interface ChromeCookieReader {
   getCookies: (url: string, profileOrPath?: string) => Promise<ChromeCookie[]>
 }
 
+export interface InlineCookieInput {
+  inlineCookiesJson?: string
+  inlineCookiesBase64?: string
+  inlineCookiesFile?: string
+}
+
 export interface CookieCandidate {
   profile: string
   cookieCount: number
@@ -43,7 +49,7 @@ export interface PlaywrightCookie {
 
 const NPM_URLS = ['https://www.npmjs.com', 'https://www.npmjs.com/settings/profile']
 const AUTH_PATTERNS = [/session/i, /token/i, /auth/i, /npm/i, /login/i]
-const SQLITE_BINDINGS_PATTERNS = [/node_sqlite3\.node/i, /bindings file/i, /self-register/i]
+let sweetCookieModule: { getCookies: Function } | null | undefined
 
 export function defaultChromeUserDataDir(): string | undefined {
   const home = os.homedir()
@@ -98,24 +104,19 @@ export function readLastActiveProfile(userDataDir: string): string | null {
 }
 
 export async function loadChromeCookieReader(logger: Logger): Promise<ChromeCookieReader | null> {
-  try {
-    const imported: unknown = await import('chrome-cookies-secure')
-    const module = resolveCookieModule(imported)
-    if (!module) {
-      logger.warn('chrome-cookies-secure missing getCookiesPromised().')
-      return null
+  const module = await loadSweetCookie(logger)
+  if (!module) return null
+  return {
+    getCookies: async (url, profileOrPath) => {
+      const { cookies, warnings } = await module.getCookies({
+        url,
+        browsers: ['chrome'],
+        mode: 'first',
+        chromeProfile: profileOrPath
+      })
+      logSweetCookieWarnings(logger, warnings)
+      return cookies as ChromeCookie[]
     }
-    return {
-      getCookies: async (url, profileOrPath) => module.getCookiesPromised(url, 'puppeteer', profileOrPath)
-    }
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
-    if (SQLITE_BINDINGS_PATTERNS.some((re) => re.test(message))) {
-      logger.warn('chrome-cookies-secure requires sqlite bindings. Try: pnpm rebuild chrome-cookies-secure sqlite3 keytar')
-    } else {
-      logger.warn(`Unable to load chrome-cookies-secure: ${message}`)
-    }
-    return null
   }
 }
 
@@ -203,17 +204,37 @@ export async function resolveChromeProfileAuto(options: {
 }
 
 export async function readNpmCookiesForProfile(options: {
-  profile: string
+  profile?: string
   logger: Logger
   userDataDir?: string
   profileDir?: string
   reader?: ChromeCookieReader | null
+  inlineCookies?: InlineCookieInput
 }): Promise<PlaywrightCookie[]> {
-  const reader = options.reader ?? (await loadChromeCookieReader(options.logger))
-  if (!reader) return []
-
-  const profileSource = resolveProfileSource(options.profile, options.userDataDir, options.profileDir)
   const merged: PlaywrightCookie[] = []
+  const inline = options.inlineCookies
+  const inlineEnabled = hasInlineCookies(inline)
+  const profileSource = options.profile ? resolveProfileSource(options.profile, options.userDataDir, options.profileDir) : undefined
+
+  if (inlineEnabled) {
+    for (const url of NPM_URLS) {
+      const cookies = await readCookiesViaSweetCookie({
+        url,
+        logger: options.logger,
+        profileSource,
+        inlineCookies: inline
+      })
+      for (const cookie of cookies) {
+        const normalized = normalizeCookieForPlaywright(cookie, url)
+        if (normalized) merged.push(normalized)
+      }
+    }
+    const deduped = dedupeCookies(merged)
+    if (deduped.length) return deduped
+  }
+
+  const reader = options.reader ?? (await loadChromeCookieReader(options.logger))
+  if (!reader || !profileSource) return dedupeCookies(merged)
 
   for (const url of NPM_URLS) {
     let cookies: ChromeCookie[] = []
@@ -234,17 +255,76 @@ export async function readNpmCookiesForProfile(options: {
   return dedupeCookies(merged)
 }
 
-function resolveCookieModule(imported: unknown): { getCookiesPromised: Function } | null {
-  if (imported && typeof (imported as any).getCookiesPromised === 'function') {
+async function loadSweetCookie(logger: Logger): Promise<{ getCookies: Function } | null> {
+  if (sweetCookieModule !== undefined) return sweetCookieModule
+  try {
+    const imported: unknown = await import('@steipete/sweet-cookie')
+    const module = resolveSweetCookieModule(imported)
+    if (!module) {
+      logger.warn('@steipete/sweet-cookie missing getCookies().')
+      sweetCookieModule = null
+      return null
+    }
+    sweetCookieModule = module
+    return module
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    if (message.includes('node:sqlite')) {
+      logger.warn('@steipete/sweet-cookie requires Node >= 22 (node:sqlite).')
+    } else {
+      logger.warn(`Unable to load @steipete/sweet-cookie: ${message}`)
+    }
+    sweetCookieModule = null
+    return null
+  }
+}
+
+function resolveSweetCookieModule(imported: unknown): { getCookies: Function } | null {
+  if (imported && typeof (imported as any).getCookies === 'function') {
     return imported as any
   }
   if (imported && typeof imported === 'object') {
     const fallback = (imported as any).default
-    if (fallback && typeof fallback.getCookiesPromised === 'function') {
+    if (fallback && typeof fallback.getCookies === 'function') {
       return fallback as any
     }
   }
   return null
+}
+
+async function readCookiesViaSweetCookie(options: {
+  url: string
+  logger: Logger
+  profileSource?: string
+  inlineCookies?: InlineCookieInput
+}): Promise<ChromeCookie[]> {
+  const module = await loadSweetCookie(options.logger)
+  if (!module) return []
+  const { cookies, warnings } = await module.getCookies({
+    url: options.url,
+    browsers: ['chrome'],
+    mode: 'first',
+    chromeProfile: options.profileSource,
+    inlineCookiesJson: options.inlineCookies?.inlineCookiesJson,
+    inlineCookiesBase64: options.inlineCookies?.inlineCookiesBase64,
+    inlineCookiesFile: options.inlineCookies?.inlineCookiesFile
+  })
+  logSweetCookieWarnings(options.logger, warnings)
+  return Array.isArray(cookies) ? (cookies as ChromeCookie[]) : []
+}
+
+function hasInlineCookies(inline?: InlineCookieInput): boolean {
+  if (!inline) return false
+  return Boolean(inline.inlineCookiesJson || inline.inlineCookiesBase64 || inline.inlineCookiesFile)
+}
+
+function logSweetCookieWarnings(logger: Logger, warnings: unknown): void {
+  if (!Array.isArray(warnings) || !warnings.length) return
+  for (const warning of warnings) {
+    if (typeof warning === 'string' && warning.trim()) {
+      logger.warn(warning.trim())
+    }
+  }
 }
 
 function scoreCookies(cookies: ChromeCookie[]) {

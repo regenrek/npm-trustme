@@ -1,6 +1,6 @@
 # npm-trustme
 
-npm-trustme gives you a 100% automated way to set up npm Trusted Publishers.
+npm-trustme automates npm Trusted Publisher setup with a one-time WebAuthn approval.
 
 ![License](https://img.shields.io/badge/License-MIT-yellow?style=flat&colorA=18181B&colorB=28CF8D)
 [![Stars](https://img.shields.io/github/stars/regenrek/npm-trustme.svg?style=flat&colorA=18181B&colorB=28CF8D)](https://github.com/regenrek/npm-trustme/stargazers)
@@ -11,17 +11,21 @@ npm-trustme gives you a 100% automated way to set up npm Trusted Publishers.
 - Local npm login now issues short-lived sessions, which forces repeated manual auth.
 - Trusted Publishers solve this, but npm only exposes setup via the browser UI.
 
-npm-trustme automates that UI so teams can keep releases fully automated.
+npm-trustme reduces the manual work to a single WebAuthn approval, then automates the rest.
 
 ## Features
+- WebAuthn-friendly token bootstrap (opens auth URL, polls for approval).
 - Browser automation (Playwright) to add Trusted Publishers end-to-end.
+- Inline cookie payloads via Sweet Cookie (no native addons).
 - Provider-based credential system; add your own password manager in one file.
 - 1Password CLI integration (`op`) + interactive fallback.
 - `.env` driven config with `--env-file` override.
 
 ## Quick Start
 
-### Install
+### Install (dev)
+Requires Node >= 22.
+
 ```bash
 pnpm install
 npx playwright install
@@ -30,17 +34,33 @@ npx playwright install
 ### Configure
 Copy `.env.example` to `.env` and fill in values.
 
+### Optional: inline cookies (no DB access)
+If you can’t read local cookies (locked DB, app-bound cookies, remote machine), export cookies via the Sweet Cookie Chrome extension and pass the payload:
+
+```bash
+npx npm-trustme ensure --inline-cookies-file /path/to/sweet-cookie.cookies.json
+```
+
+### Bootstrap token (recommended for WebAuthn-only accounts)
+```bash
+npx npm-trustme token create \
+  --name trustme-setup \
+  --packages <PACKAGE_NAME> \
+  --bypass-2fa \
+  --output .npm-trustme/token.json
+```
+
 ### Run
 ```bash
-pnpm tsx src/cli/main.ts ensure
+npx npm-trustme ensure
 ```
 
 ### Example (explicit flags)
 ```bash
-pnpm tsx src/cli/main.ts ensure \
-  --package codex-1up \
-  --owner regenrek \
-  --repo codex-1up \
+npx npm-trustme ensure \
+  --package <PACKAGE_NAME> \
+  --owner <GITHUB_OWNER> \
+  --repo <GITHUB_REPO> \
   --workflow npm-release.yml \
   --publisher github \
   --publishing-access disallow-tokens \
@@ -50,14 +70,14 @@ pnpm tsx src/cli/main.ts ensure \
 
 ### Check only
 ```bash
-pnpm tsx src/cli/main.ts check
+npx npm-trustme check
 ```
 
 ## Environment Variables
 ```bash
-NPM_TRUSTME_PACKAGE=codex-1up
-NPM_TRUSTME_OWNER=regenrek
-NPM_TRUSTME_REPO=codex-1up
+NPM_TRUSTME_PACKAGE=<PACKAGE_NAME>
+NPM_TRUSTME_OWNER=<GITHUB_OWNER>
+NPM_TRUSTME_REPO=<GITHUB_REPO>
 NPM_TRUSTME_WORKFLOW=npm-release.yml
 NPM_TRUSTME_PUBLISHER=github
 NPM_TRUSTME_PUBLISHING_ACCESS=disallow-tokens
@@ -79,6 +99,11 @@ NPM_TRUSTME_OP_ITEM=npmjs.com
 # NPM_TRUSTME_PASSWORD=
 # NPM_TRUSTME_OTP=
 
+# Token bootstrap (optional)
+# NPM_TRUSTME_SESSION_TOKEN=
+# NPM_TRUSTME_TOKEN_PATH=~/.npm-trustme/token.json
+# NPM_TRUSTME_PRINT_TOKEN=false
+
 # Bitwarden CLI
 # NPM_TRUSTME_BW_ITEM=
 # NPM_TRUSTME_BW_SESSION=
@@ -97,6 +122,10 @@ NPM_TRUSTME_OP_ITEM=npmjs.com
 # Optional runtime tweaks
 # NPM_TRUSTME_STORAGE=.cache/npm-trustme-storage.json
 # NPM_TRUSTME_SCREENSHOT_DIR=.cache/screenshots
+# NPM_TRUSTME_CONFIG=~/.npm-trustme/config.json
+# NPM_TRUSTME_INLINE_COOKIES_JSON=
+# NPM_TRUSTME_INLINE_COOKIES_BASE64=
+# NPM_TRUSTME_INLINE_COOKIES_FILE=
 
 # Optional Chrome profile reuse (manual login/session)
 # NPM_TRUSTME_CHROME_PROFILE=Default
@@ -108,13 +137,20 @@ NPM_TRUSTME_OP_ITEM=npmjs.com
 ```
 
 ## Notes
+- Requires Node >= 22 (Sweet Cookie uses node:sqlite).
 - Login modes:
   - `auto` (default): uses credential providers to log in.
   - `browser`: uses an existing Chrome profile/session and waits for manual login if needed.
 - Chrome profile reuse: `--chrome-profile` / `--chrome-profile-dir` / `--chrome-user-data-dir` / `--chrome-path`.
 - Connect to an existing Chrome: `--chrome-cdp-url` or `--chrome-debug-port` (Chrome must be launched with remote debugging).
-- Auto profile detection uses `chrome-cookies-secure`. If it fails due to native bindings, run `pnpm approve-builds` and `pnpm rebuild chrome-cookies-secure sqlite3 keytar`.
-  - Cookie sync lets you keep Chrome open; npm-trustme copies npmjs.com cookies into a fresh browser context when possible.
+- Cookie import can be toggled with `--import-cookies` or `NPM_TRUSTME_IMPORT_COOKIES` (default: true).
+- Dedicated Chrome (keeps your main browser open + supports passkey extensions):
+  - `npm-trustme chrome start` launches a dedicated Chrome profile with CDP on port 9222 and saves it to config.
+  - `npm-trustme chrome status` checks if the CDP endpoint is available.
+  - After first run, install the 1Password extension and sign in to npm once in that profile.
+- Token bootstrap uses the npm registry web auth flow. If no session token is found, run `npm login --auth-type=web` first.
+- Cookie import uses `@steipete/sweet-cookie` (no native addons). Inline cookies from the Sweet Cookie extension are supported.
+- Cookie sync lets you keep Chrome open; npm-trustme copies npmjs.com cookies into a fresh browser context when possible.
 - If the workflow filename includes a path, it is normalized to just the filename.
 - `publishing-access` options:
   - `disallow-tokens` (recommended for OIDC-only)
