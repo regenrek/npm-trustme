@@ -1,6 +1,6 @@
 {
   "name": "npm-trustme",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "type": "module",
   "bin": {
     "npm-trustme": "dist/main.js"
