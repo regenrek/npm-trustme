@@ -101,7 +101,8 @@ export async function ensurePublishingAccess(
   await waitForAccessReady(page, target.packageName, logger, options)
 
   const desiredLabel = accessLabel(target.publishingAccess)
-  const radio = await findRadio(page, desiredLabel)
+  const desiredValue = accessValue(target.publishingAccess)
+  const radio = await findRadio(page, desiredLabel, desiredValue)
   if (!radio) {
     logger.warn('Unable to locate publishing access option; skipping.')
     return 'skipped'
@@ -118,10 +119,16 @@ export async function ensurePublishingAccess(
     return 'dry-run'
   }
 
+  await radio.scrollIntoViewIfNeeded().catch(() => {})
   await radio.click()
   const save = await findButton(page, [/save/i, /update package settings/i, /update settings/i, /save changes/i])
   await save.click()
-  await page.waitForTimeout(1000)
+  const confirmed = await waitForPublishingAccess(page, desiredValue, logger, options)
+  if (!confirmed) {
+    const screenshot = await captureScreenshot(page, options.screenshotDir, 'publishing-access-failed')
+    const hint = screenshot ? ` (screenshot: ${screenshot})` : ''
+    throw new Error(`Failed to confirm publishing access update${hint}`)
+  }
 
   logger.success('Publishing access updated.')
   return 'updated'
@@ -374,10 +381,20 @@ function accessLabel(access: PublishingAccess): RegExp {
   return /require two-factor authentication or a granular access token/i
 }
 
-async function findRadio(page: Page, label: RegExp) {
-  const radio = page.getByRole('radio', { name: label }).first()
-  if (await radio.isVisible({ timeout: 1500 }).catch(() => false)) {
-    return radio
+function accessValue(access: PublishingAccess): string {
+  if (access === 'disallow-tokens') return 'tfa-always-required'
+  return 'tfa-required-unless-automation'
+}
+
+async function findRadio(page: Page, label: RegExp, value: string) {
+  const selector = `input[type="radio"][name="publishingAccess"][value="${value}"]`
+  const byValue = page.locator(selector).first()
+  if (await byValue.isVisible({ timeout: 1500 }).catch(() => false)) {
+    return byValue
+  }
+  const byRole = page.getByRole('radio', { name: label }).first()
+  if (await byRole.isVisible({ timeout: 1500 }).catch(() => false)) {
+    return byRole
   }
   const fallback = page.getByLabel(label).first()
   if (await fallback.isVisible({ timeout: 1500 }).catch(() => false)) {
@@ -477,6 +494,33 @@ async function isTrustedPublishersReady(page: Page): Promise<boolean> {
 
 function isAccessUrl(currentUrl: string, packageName: string): boolean {
   return currentUrl.includes(`/package/${packageName}/access`)
+}
+
+async function waitForPublishingAccess(
+  page: Page,
+  value: string,
+  logger: Logger,
+  options: EnsureOptions
+): Promise<boolean> {
+  const timeout = options.timeoutMs ?? 60000
+  const start = Date.now()
+  while (Date.now() - start < timeout) {
+    if (await isTwoFactorGate(page)) {
+      if (!options.headless) {
+        await triggerSecurityKeyIfPresent(page, logger)
+        await page.waitForTimeout(1000)
+        continue
+      }
+      throw new Error('npm requires 2FA verification; rerun with headless=false.')
+    }
+    const selector = `input[type="radio"][name="publishingAccess"][value="${value}"]`
+    const locator = page.locator(selector).first()
+    if (await locator.isVisible({ timeout: 1000 }).catch(() => false)) {
+      if (await locator.isChecked().catch(() => false)) return true
+    }
+    await page.waitForTimeout(1000)
+  }
+  return false
 }
 
 async function isEditableLocator(locator: ReturnType<Page['locator']>): Promise<boolean> {

@@ -7,6 +7,9 @@ All notable changes to this project will be documented in this file.
 ### Added
 - Auto-detection for package, repo, and workflow when flags are omitted.
 
+### Fixed
+- Publishing access selection now targets the strict (disallow tokens) radio reliably and waits for 2FA completion.
+
 ## [0.1.4]
 
 ### Added
