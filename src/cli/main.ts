@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url'
 import { existsSync } from 'node:fs'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { execSync, spawn } from 'node:child_process'
+import { createInterface } from 'node:readline/promises'
 import { createLogger } from '../core/logger.js'
 import { launchBrowser, saveStorageState, closeBrowser } from '../core/browser/session.js'
 import { resolveChromeProfileAuto, readNpmCookiesForProfile, defaultChromeUserDataDir, type InlineCookieInput } from '../core/browser/chromeProfiles.js'
@@ -37,6 +38,7 @@ interface CommonOptions {
   environment?: string
   maintainer?: string
   publishingAccess?: string
+  yes?: boolean
   headless?: boolean
   slowMo?: number
   timeout?: number
@@ -153,7 +155,8 @@ const main = defineCommand({
       meta: { name: 'ensure', description: 'Ensure a trusted publisher exists (adds if missing)' },
       args: {
         ...commonArgs,
-        'dry-run': { type: 'boolean', description: 'Show what would change without applying' }
+        'dry-run': { type: 'boolean', description: 'Show what would change without applying' },
+        yes: { type: 'boolean', description: 'Skip confirmation prompt' }
       },
       async run({ args }) {
         await runEnsure({ ...normalizeArgs(args), dryRun: Boolean((args as any)['dry-run']) })
@@ -248,6 +251,13 @@ async function runEnsure(options: CommonOptions & { dryRun?: boolean }): Promise
   const logger = createLogger(Boolean(options.verbose))
   const target = resolveTarget(options)
 
+  const confirmed = await confirmEnsure(target, options, logger)
+  if (!confirmed) {
+    logger.warn('Aborted by user.')
+    process.exitCode = 1
+    return
+  }
+
   const browserOptions = await resolveBrowserOptions(options, logger)
   const session = await launchBrowser(browserOptions)
   await applyBrowserCookies(session, browserOptions, options, logger)
@@ -269,6 +279,45 @@ async function runEnsure(options: CommonOptions & { dryRun?: boolean }): Promise
     await saveStorageState(session.context, options.storage)
     await closeBrowser(session)
   }
+}
+
+async function confirmEnsure(
+  target: TrustedPublisherTarget,
+  options: CommonOptions,
+  logger: ReturnType<typeof createLogger>
+): Promise<boolean> {
+  if (options.yes) return true
+  if (!process.stdin.isTTY) {
+    logger.error('Confirmation required. Re-run with --yes to proceed in non-interactive mode.')
+    return false
+  }
+
+  const lines = [
+    'About to ensure npm trusted publisher:',
+    `  package: ${target.packageName}`,
+    `  repo: ${target.owner}/${target.repo}`,
+    `  workflow: ${target.workflow}`,
+    target.environment ? `  environment: ${target.environment}` : null,
+    target.maintainer ? `  maintainer: ${target.maintainer}` : null,
+    `  publishing access: ${describePublishingAccess(target.publishingAccess)}`,
+    '',
+    'This will open a browser window and may prompt for login/2FA.',
+    'Proceed? (y/N): '
+  ].filter(Boolean)
+
+  const rl = createInterface({ input: process.stdin, output: process.stdout })
+  try {
+    const answer = await rl.question(lines.join('\n'))
+    return ['y', 'yes'].includes(answer.trim().toLowerCase())
+  } finally {
+    rl.close()
+  }
+}
+
+function describePublishingAccess(value: PublishingAccess): string {
+  if (value === 'skip') return 'skip'
+  if (value === 'disallow-tokens') return 'require 2FA and disallow tokens'
+  return 'require 2FA or bypass token'
 }
 
 async function runChromeStart(options: CommonOptions): Promise<void> {
@@ -495,6 +544,7 @@ function normalizeArgs(raw: Record<string, unknown>): CommonOptions {
     environment: stringArg(raw.environment),
     maintainer: stringArg(raw.maintainer),
     publishingAccess: stringArg((raw as any)['publishing-access']),
+    yes: boolArg((raw as any).yes),
     headless: Boolean(raw.headless),
     slowMo: numberArg((raw as any)['slow-mo']),
     timeout: numberArg(raw.timeout),
