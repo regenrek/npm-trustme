@@ -193,6 +193,7 @@ async function waitForAccessReady(
   let loginPrompted = false
   let twoFactorPrompted = false
   let lastNavigation = 0
+  let lastTwoFactorCheck = 0
 
   while (Date.now() - start < timeout) {
     if (page.url().includes('/login')) {
@@ -207,17 +208,20 @@ async function waitForAccessReady(
       throw new Error('Not logged in (redirected to login).')
     }
 
-    if (await isTwoFactorGate(page)) {
-      if (!options.headless) {
-        await triggerSecurityKeyIfPresent(page, logger)
-        if (!twoFactorPrompted) {
-          logger.info('Complete npm 2FA in the browser window (security key or OTP).')
-          twoFactorPrompted = true
+    if (shouldCheckTwoFactor(lastTwoFactorCheck)) {
+      lastTwoFactorCheck = Date.now()
+      if (await isTwoFactorGate(page)) {
+        if (!options.headless) {
+          await triggerSecurityKeyIfPresent(page, logger)
+          if (!twoFactorPrompted) {
+            logger.info('Complete npm 2FA in the browser window (security key or OTP).')
+            twoFactorPrompted = true
+          }
+          await page.waitForTimeout(1000)
+          continue
         }
-        await page.waitForTimeout(1000)
-        continue
+        throw new Error('npm requires 2FA verification; rerun with headless=false.')
       }
-      throw new Error('npm requires 2FA verification; rerun with headless=false.')
     }
 
     if (await isTrustedPublishersReady(page)) return
@@ -244,14 +248,18 @@ async function waitForPublishingAccessControls(
 ): Promise<boolean> {
   const timeout = options.timeoutMs ?? 60000
   const start = Date.now()
+  let lastTwoFactorCheck = 0
   while (Date.now() - start < timeout) {
-    if (await isTwoFactorGate(page)) {
-      if (!options.headless) {
-        await triggerSecurityKeyIfPresent(page, logger)
-        await page.waitForTimeout(1000)
-        continue
+    if (shouldCheckTwoFactor(lastTwoFactorCheck)) {
+      lastTwoFactorCheck = Date.now()
+      if (await isTwoFactorGate(page)) {
+        if (!options.headless) {
+          await triggerSecurityKeyIfPresent(page, logger)
+          await page.waitForTimeout(1000)
+          continue
+        }
+        throw new Error('npm requires 2FA verification; rerun with headless=false.')
       }
-      throw new Error('npm requires 2FA verification; rerun with headless=false.')
     }
     const locator = page.locator('input[name="publishingAccess"]').first()
     if (await locator.isVisible({ timeout: 1000 }).catch(() => false)) return true
@@ -264,18 +272,22 @@ async function waitForTrustedPublisherForm(page: Page, logger: Logger, options: 
   const timeout = options.timeoutMs ?? 60000
   const start = Date.now()
   let twoFactorPrompted = false
+  let lastTwoFactorCheck = 0
   while (Date.now() - start < timeout) {
-    if (await isTwoFactorGate(page)) {
-      if (!options.headless) {
-        await triggerSecurityKeyIfPresent(page, logger)
-        if (!twoFactorPrompted) {
-          logger.info('Waiting for npm 2FA to complete...')
-          twoFactorPrompted = true
+    if (shouldCheckTwoFactor(lastTwoFactorCheck)) {
+      lastTwoFactorCheck = Date.now()
+      if (await isTwoFactorGate(page)) {
+        if (!options.headless) {
+          await triggerSecurityKeyIfPresent(page, logger)
+          if (!twoFactorPrompted) {
+            logger.info('Waiting for npm 2FA to complete...')
+            twoFactorPrompted = true
+          }
+          await page.waitForTimeout(1000)
+          continue
         }
-        await page.waitForTimeout(1000)
-        continue
+        throw new Error('npm requires 2FA verification; rerun with headless=false.')
       }
-      throw new Error('npm requires 2FA verification; rerun with headless=false.')
     }
 
     const ownerField = page.getByRole('textbox', { name: /organization|owner|user/i }).first()
@@ -506,7 +518,9 @@ async function textVisible(page: Page, text: string): Promise<boolean> {
   }
 }
 
-async function isTwoFactorGate(page: Page): Promise<boolean> {
+const TWO_FACTOR_POLL_INTERVAL_MS = 1500
+
+export async function isTwoFactorGate(page: Page): Promise<boolean> {
   const signals: Array<ReturnType<Page['locator']>> = [
     page.getByRole('heading', { name: /two[-\s]?factor/i }).first(),
     page.getByRole('button', { name: /use security key|use passkey|use security/i }).first(),
@@ -518,9 +532,17 @@ async function isTwoFactorGate(page: Page): Promise<boolean> {
   ]
 
   for (const locator of signals) {
-    if (await locator.isVisible({ timeout: 800 }).catch(() => false)) return true
+    if (await fastVisible(locator)) return true
   }
   return false
+}
+
+function shouldCheckTwoFactor(lastCheckedAt: number, now: number = Date.now()): boolean {
+  return now - lastCheckedAt >= TWO_FACTOR_POLL_INTERVAL_MS
+}
+
+async function fastVisible(locator: ReturnType<Page['locator']>): Promise<boolean> {
+  return locator.isVisible({ timeout: 0 }).catch(() => false)
 }
 
 async function isTrustedPublishersReady(page: Page): Promise<boolean> {
@@ -545,14 +567,18 @@ async function waitForPublishingAccess(
 ): Promise<boolean> {
   const timeout = options.timeoutMs ?? 60000
   const start = Date.now()
+  let lastTwoFactorCheck = 0
   while (Date.now() - start < timeout) {
-    if (await isTwoFactorGate(page)) {
-      if (!options.headless) {
-        await triggerSecurityKeyIfPresent(page, logger)
-        await page.waitForTimeout(1000)
-        continue
+    if (shouldCheckTwoFactor(lastTwoFactorCheck)) {
+      lastTwoFactorCheck = Date.now()
+      if (await isTwoFactorGate(page)) {
+        if (!options.headless) {
+          await triggerSecurityKeyIfPresent(page, logger)
+          await page.waitForTimeout(1000)
+          continue
+        }
+        throw new Error('npm requires 2FA verification; rerun with headless=false.')
       }
-      throw new Error('npm requires 2FA verification; rerun with headless=false.')
     }
     const selector = `input[type="radio"][name="publishingAccess"][value="${value}"]`
     const locator = page.locator(selector).first()
