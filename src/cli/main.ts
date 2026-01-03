@@ -68,6 +68,10 @@ interface WorkflowInitOptions {
   verbose?: boolean
 }
 
+interface DoctorOptions {
+  verbose?: boolean
+}
+
 preloadEnv()
 
 const targetArgs = {
@@ -110,6 +114,11 @@ const commonArgs = {
   ...envArgs
 } as const
 
+const doctorArgs = {
+  verbose: commonArgs.verbose,
+  'env-file': commonArgs['env-file']
+} as const
+
 const workflowArgs = {
   file: { type: 'string', description: 'Workflow filename (default: npm-release.yml)' },
   pm: { type: 'string', description: 'Package manager: pnpm|npm (default: auto)' },
@@ -146,6 +155,13 @@ const main = defineCommand({
       },
       async run({ args }) {
         await runEnsure({ ...normalizeArgs(args), dryRun: Boolean((args as any)['dry-run']) })
+      }
+    }),
+    doctor: defineCommand({
+      meta: { name: 'doctor', description: 'Check system readiness for npm-trustme' },
+      args: doctorArgs,
+      async run({ args }) {
+        await runDoctor({ verbose: Boolean(args.verbose) })
       }
     }),
     chrome: defineCommand({
@@ -391,6 +407,80 @@ async function runWorkflowInit(options: WorkflowInitOptions): Promise<void> {
   }
   if (packageManager !== detectedPm) {
     logger.info(`Package manager override: ${packageManager} (detected ${detectedPm})`)
+  }
+}
+
+async function runDoctor(options: DoctorOptions): Promise<void> {
+  const logger = createLogger(Boolean(options.verbose))
+  const env = process.env
+  const config = await readConfig(env)
+  const warnings: string[] = []
+
+  const nodeVersion = process.versions.node
+  const major = Number(nodeVersion.split('.')[0] || 0)
+  if (major >= 22) {
+    logger.success(`Node.js ${nodeVersion} (>=22)`)
+  } else {
+    const message = `Node.js ${nodeVersion} is below the supported minimum (>=22).`
+    logger.warn(message)
+    warnings.push(message)
+  }
+
+  try {
+    await import('playwright')
+    logger.success('Playwright module resolved.')
+  } catch {
+    const message = 'Playwright module missing. Run `pnpm install` or use `npx npm-trustme ...`.'
+    logger.warn(message)
+    warnings.push(message)
+  }
+
+  const configuredChromePath = env.NPM_TRUSTME_CHROME_PATH || config.chromePath
+  const resolvedChromePath = configuredChromePath || resolveChromeBinary()
+  if (resolvedChromePath && existsSync(resolvedChromePath)) {
+    logger.success(`Chrome detected at ${resolvedChromePath}.`)
+  } else {
+    const message = 'Chrome binary not found. Set NPM_TRUSTME_CHROME_PATH or install Chrome.'
+    logger.warn(message)
+    warnings.push(message)
+  }
+
+  const cdpCandidates = new Set<string>()
+  if (env.NPM_TRUSTME_CHROME_CDP_URL) cdpCandidates.add(env.NPM_TRUSTME_CHROME_CDP_URL)
+  if (env.NPM_TRUSTME_CHROME_DEBUG_PORT) {
+    cdpCandidates.add(buildCdpUrl(Number(env.NPM_TRUSTME_CHROME_DEBUG_PORT)))
+  }
+  if (config.chromeCdpUrl) cdpCandidates.add(config.chromeCdpUrl)
+  if (config.chromeDebugPort) cdpCandidates.add(buildCdpUrl(config.chromeDebugPort))
+  if (cdpCandidates.size) {
+    const found = await detectCdpUrl(Array.from(cdpCandidates), 500)
+    if (found) {
+      logger.success(`Chrome CDP reachable at ${found}.`)
+    } else {
+      const message = 'Configured Chrome CDP endpoint is not reachable.'
+      logger.warn(message)
+      warnings.push(message)
+    }
+  } else {
+    logger.info('No Chrome CDP endpoint configured (optional).')
+  }
+
+  const missingTargets: string[] = []
+  if (!env.NPM_TRUSTME_PACKAGE) missingTargets.push('NPM_TRUSTME_PACKAGE')
+  if (!env.NPM_TRUSTME_OWNER) missingTargets.push('NPM_TRUSTME_OWNER')
+  if (!env.NPM_TRUSTME_REPO) missingTargets.push('NPM_TRUSTME_REPO')
+  if (!env.NPM_TRUSTME_WORKFLOW) missingTargets.push('NPM_TRUSTME_WORKFLOW')
+
+  if (missingTargets.length) {
+    const message = `Missing target env vars: ${missingTargets.join(', ')}`
+    logger.warn(message)
+    warnings.push(message)
+  } else {
+    logger.success('Target env vars present.')
+  }
+
+  if (warnings.length) {
+    process.exitCode = 2
   }
 }
 

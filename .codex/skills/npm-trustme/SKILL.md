@@ -15,6 +15,7 @@ Automate npm Trusted Publisher setup in the npm web UI. Requires a one-time WebA
 - Ensure (create if missing): `npx npm-trustme ensure ...`
 - Check only: `npx npm-trustme check ...`
 - Generate workflow: `npx npm-trustme workflow init`
+- Doctor: `npx npm-trustme doctor`
 
 ## Required Target Inputs
 

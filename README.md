@@ -56,6 +56,12 @@ npx npm-trustme workflow init \
   --build-command "pnpm build"
 ```
 
+### Doctor
+Check local readiness (Node, Playwright, Chrome, config):
+```bash
+npx npm-trustme doctor
+```
+
 ### Example (explicit flags)
 ```bash
 npx npm-trustme ensure \
