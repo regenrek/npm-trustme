@@ -9,6 +9,7 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 - Publishing access selection now targets the strict (disallow tokens) radio reliably and waits for 2FA completion.
+- Include the Codex skill folder in npm package files.
 
 ## [0.1.4]
 

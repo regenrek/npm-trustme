@@ -15,6 +15,7 @@
   "homepage": "https://github.com/regenrek/npm-trustme#readme",
   "files": [
     "dist",
+    ".codex/skills",
     "README.md",
     "LICENSE"
   ],
