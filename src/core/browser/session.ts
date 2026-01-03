@@ -1,6 +1,6 @@
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright'
 import { existsSync } from 'node:fs'
-import { mkdir, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, writeFile } from 'node:fs/promises'
 import { basename, dirname, resolve } from 'node:path'
 import { defaultChromeUserDataDir } from './chromeProfiles.js'
 
@@ -79,17 +79,20 @@ export async function launchBrowser(options: BrowserOptions): Promise<BrowserSes
 
 export async function saveStorageState(context: BrowserContext, storageStatePath?: string): Promise<void> {
   if (!storageStatePath) return
+  await ensurePrivateDir(dirname(storageStatePath))
   await context.storageState({ path: storageStatePath })
+  await ensurePrivateFile(storageStatePath)
 }
 
 export async function captureScreenshot(page: Page, dir: string | undefined, label: string): Promise<string | null> {
   if (!dir) return null
-  const file = resolve(dir, `${label}-${Date.now()}.png`)
-  await mkdir(dirname(file), { recursive: true })
+  const file = buildScreenshotPath(dir, label)
+  await ensurePrivateDir(dirname(file))
   const buffer = await page.screenshot({ path: file, fullPage: true })
   if (!buffer) {
     await writeFile(file, '')
   }
+  await ensurePrivateFile(file)
   return file
 }
 
@@ -141,3 +144,31 @@ function resolvePersistentProfile(options: BrowserOptions): { userDataDir: strin
 }
 
 // defaultChromeUserDataDir moved to chromeProfiles.ts
+
+export function buildScreenshotPath(dir: string, label: string, now: number = Date.now()): string {
+  const safeLabel = label.replace(/[\\/]/g, '-')
+  const file = resolve(dir, `${safeLabel}-${now}.png`)
+  ensureWithinDir(dir, file)
+  return file
+}
+
+async function ensurePrivateDir(dir: string): Promise<void> {
+  await mkdir(dir, { recursive: true, mode: 0o700 })
+  await chmod(dir, 0o700).catch(() => undefined)
+}
+
+async function ensurePrivateFile(filePath: string): Promise<void> {
+  await chmod(filePath, 0o600).catch(() => undefined)
+}
+
+function ensureWithinDir(dir: string, target: string): void {
+  const base = resolve(dir)
+  const resolved = resolve(target)
+  if (resolved === base) {
+    throw new Error(`Refusing to write artifact to directory path: ${resolved}`)
+  }
+  const prefix = base.endsWith('/') ? base : `${base}/`
+  if (!resolved.startsWith(prefix)) {
+    throw new Error(`Refusing to write artifact outside of ${base}`)
+  }
+}

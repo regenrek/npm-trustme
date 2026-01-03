@@ -1,8 +1,9 @@
-// @ts-nocheck
-import { execSync } from "node:child_process";
-import fs from "node:fs";
-import path from "node:path";
-import os from "node:os";
+import { execFileSync } from 'node:child_process'
+import fs from 'node:fs'
+import path from 'node:path'
+import os from 'node:os'
+import { pathToFileURL } from 'node:url'
+import { buildGitCommitArgs, buildGitTagArgs, runCommand, validateVersionBump } from './release-utils.js'
 
 interface PackageTarget {
 	name: string;
@@ -10,17 +11,10 @@ interface PackageTarget {
 	bump?: boolean;
 }
 
-const packageTargets: PackageTarget[] = [
-	{ name: "npm-trustme", dir: ".", bump: true },
-];
-
-function run(command: string, cwd: string) {
-	console.log(`Executing: ${command} in ${cwd}`);
-	execSync(command, { stdio: "inherit", cwd });
-}
+const packageTargets: PackageTarget[] = [{ name: 'npm-trustme', dir: '.', bump: true }]
 
 function ensureCleanWorkingTree() {
-	const status = execSync("git status --porcelain", { cwd: "." })
+	const status = execFileSync('git', ['status', '--porcelain'], { cwd: '.' })
 		.toString()
 		.trim();
 	if (status.length > 0) {
@@ -45,14 +39,14 @@ function bumpVersion(
 	const currentVersion = pkgJson.version;
 	let newVersion: string;
 
-	if (type === "major" || type === "minor" || type === "patch") {
+	if (type === 'major' || type === 'minor' || type === 'patch') {
 		// Parse current version
 		const [major, minor, patch] = currentVersion.split(".").map(Number);
 
 		// Bump version according to type
-		if (type === "major") {
+		if (type === 'major') {
 			newVersion = `${major + 1}.0.0`;
-		} else if (type === "minor") {
+		} else if (type === 'minor') {
 			newVersion = `${major}.${minor + 1}.0`;
 		} else {
 			// patch
@@ -95,18 +89,18 @@ function createGitCommitAndTag(version: string) {
 
 	try {
 		// Stage all changes
-		run("git add .", ".");
+		runCommand('git', ['add', '.'], { cwd: '.' })
 
 		// Create commit with version message
-		run(`git commit -m "chore: release v${version}"`, ".");
+		runCommand('git', buildGitCommitArgs(version), { cwd: '.' })
 
 		// Create tag
-		run(`git tag -a v${version} -m "Release v${version}"`, ".");
+		runCommand('git', buildGitTagArgs(version), { cwd: '.' })
 
 		// Push commit and tag to remote
 		console.log("Pushing commit and tag to remote...");
-		run("git push", ".");
-		run("git push --tags", ".");
+		runCommand('git', ['push'], { cwd: '.' })
+		runCommand('git', ['push', '--tags'], { cwd: '.' })
 
 		console.log(`Successfully created and pushed git tag v${version}`);
 	} catch (error) {
@@ -121,7 +115,7 @@ async function releasePackages(
 	ensureCleanWorkingTree();
 
 	const newVersion = bumpAllVersions(versionBump);
-	run("pnpm build", ".");
+	runCommand('pnpm', ['build'], { cwd: '.' })
 	console.log("Release tag created; npm publish will run via GitHub Actions (Trusted Publishing).");
 
 	createGitCommitAndTag(newVersion);
@@ -134,17 +128,31 @@ async function releasePackages(
 	}
 }
 
-// Get version bump type from command line arguments
-const args = process.argv.slice(2);
-const versionBumpArg = args[0] || "patch"; // Default to patch
+function shouldRunDirectly() {
+	if (!process.argv[1]) return false
+	try {
+		const argvUrl = pathToFileURL(process.argv[1]).href
+		return argvUrl === import.meta.url
+	} catch {
+		return false
+	}
+}
 
-releasePackages(versionBumpArg).catch(console.error);
+async function main() {
+	const args = process.argv.slice(2)
+	const versionArg = validateVersionBump(args[0] || 'patch')
+	await releasePackages(versionArg)
+}
+
+if (shouldRunDirectly()) {
+	main().catch(console.error)
+}
 
 // -------------- helpers: GitHub Release --------------
 
 function hasGhCLI(): boolean {
 	try {
-		execSync("gh --version", { stdio: "ignore" });
+		execFileSync('gh', ['--version'], { stdio: 'ignore' })
 		return true;
 	} catch {
 		return false;
@@ -165,7 +173,7 @@ function changelogSection(versionLike: string): string | null {
 
 function ghReleaseExists(tag: string): boolean {
 	try {
-		execSync(`gh release view ${tag}`, { stdio: "ignore" });
+		execFileSync('gh', ['release', 'view', tag], { stdio: 'ignore' })
 		return true;
 	} catch {
 		return false;
@@ -188,10 +196,13 @@ function createGithubRelease(version: string) {
 	if (notes) fs.writeFileSync(tmp, notes);
 
 	const exists = ghReleaseExists(tag);
-	const cmd = exists
-		? `gh release edit ${tag} --title "${title}" ${notes ? `--notes-file ${tmp}` : "--generate-notes"}`
-		: `gh release create ${tag} --title "${title}" ${notes ? `--notes-file ${tmp}` : "--generate-notes"}`;
+	const args = exists ? ['release', 'edit', tag, '--title', title] : ['release', 'create', tag, '--title', title]
+	if (notes) {
+		args.push('--notes-file', tmp)
+	} else {
+		args.push('--generate-notes')
+	}
 
 	console.log(`${exists ? "Updating" : "Creating"} GitHub Release ${tag}...`);
-	execSync(cmd, { stdio: "inherit" });
+	runCommand('gh', args)
 }

@@ -140,6 +140,7 @@ Password-manager browser extensions can work, but require installing + signing i
 - Inline cookie payloads should live outside your repo or in a gitignored path.
 - npm-trustme only reads cookies into an ephemeral browser context unless you connect to an existing Chrome via CDP.
 - Passkey/2FA happens in the browser; npm-trustme does not store tokens or passwords.
+- Screenshots/storage state (when enabled) are written with restrictive perms (dir 700, file 600).
 
 ## Codex Skill
 This repo ships a Codex skill at `.codex/skills/npm-trustme`.
