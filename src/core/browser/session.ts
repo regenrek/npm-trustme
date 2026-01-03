@@ -1,7 +1,7 @@
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright'
 import { existsSync } from 'node:fs'
 import { chmod, mkdir, writeFile } from 'node:fs/promises'
-import { basename, dirname, resolve } from 'node:path'
+import { basename, dirname, resolve, relative, isAbsolute, sep } from 'node:path'
 import { defaultChromeUserDataDir } from './chromeProfiles.js'
 
 export interface BrowserOptions {
@@ -167,8 +167,8 @@ function ensureWithinDir(dir: string, target: string): void {
   if (resolved === base) {
     throw new Error(`Refusing to write artifact to directory path: ${resolved}`)
   }
-  const prefix = base.endsWith('/') ? base : `${base}/`
-  if (!resolved.startsWith(prefix)) {
+  const rel = relative(base, resolved)
+  if (!rel || rel === '.' || rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
     throw new Error(`Refusing to write artifact outside of ${base}`)
   }
 }
