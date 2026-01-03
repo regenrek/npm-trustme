@@ -67,6 +67,9 @@ jobs:
       - name: Build
         run: pnpm build
 
+      - name: Verify npm package contents (npm pack --dry-run)
+        run: pnpm run check:pack
+
       - name: Publish to npm (OIDC)
         run: npm publish --access public --provenance --tag ${{ steps.release.outputs.dist }}
         env:

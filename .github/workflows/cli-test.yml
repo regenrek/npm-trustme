@@ -6,6 +6,10 @@ on:
     paths:
       - 'src/**'
       - 'tests/**'
+      - 'dist/**'
+      - 'scripts/**'
+      - 'README.md'
+      - 'LICENSE'
       - 'package.json'
       - '.github/workflows/cli-test.yml'
       - 'pnpm-lock.yaml'
@@ -14,6 +18,10 @@ on:
     paths:
       - 'src/**'
       - 'tests/**'
+      - 'dist/**'
+      - 'scripts/**'
+      - 'README.md'
+      - 'LICENSE'
       - 'package.json'
       - '.github/workflows/cli-test.yml'
       - 'pnpm-lock.yaml'
@@ -128,3 +136,6 @@ jobs:
           
           # Quick syntax check (import would run CLI as side-effect)
           node --check dist/main.js && echo "✓ Syntax check passed"
+
+      - name: Verify npm package contents (npm pack --dry-run)
+        run: pnpm run check:pack

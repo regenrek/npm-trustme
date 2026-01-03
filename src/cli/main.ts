@@ -3,24 +3,29 @@ import { defineCommand, runMain } from 'citty'
 import { config as loadEnv } from 'dotenv'
 import path from 'node:path'
 import { existsSync } from 'node:fs'
-import { chmod, mkdir, writeFile } from 'node:fs/promises'
+import { mkdir, writeFile } from 'node:fs/promises'
 import { execSync, spawn } from 'node:child_process'
-import { createLogger, redact } from '../core/logger.js'
+import { createLogger } from '../core/logger.js'
 import { launchBrowser, saveStorageState, closeBrowser } from '../core/browser/session.js'
 import { resolveChromeProfileAuto, readNpmCookiesForProfile, defaultChromeUserDataDir, type InlineCookieInput } from '../core/browser/chromeProfiles.js'
 import { buildCdpUrl, detectCdpUrl, fetchCdpVersion } from '../core/browser/cdp.js'
 import { readConfig, writeConfig, defaultTrustmeChromeDir } from '../core/config.js'
-import { createAccessToken, getNpmSessionToken, type TokenCreateResponse } from '../core/npm/tokens.js'
 import {
   ensureLoggedIn,
   ensureTrustedPublisher,
   ensurePublishingAccess,
-  captureTrustedPublisherTemplate,
-  applyTrustedPublisherViaToken,
   type TrustedPublisherTarget,
   type PublishingAccess
 } from '../core/npm/trustedPublisher.js'
-import { resolveCredentials } from '../core/credentials/index.js'
+import {
+  detectBuildCommand,
+  detectPackageManager,
+  normalizePackageManager,
+  normalizeTrigger,
+  renderNpmReleaseWorkflow,
+  resolveInstallCommand,
+  resolveTagPattern
+} from '../core/workflow/npmRelease.js'
 
 interface CommonOptions {
   package?: string
@@ -28,10 +33,8 @@ interface CommonOptions {
   repo?: string
   workflow?: string
   environment?: string
-  publisher?: string
   maintainer?: string
   publishingAccess?: string
-  loginMode?: string
   headless?: boolean
   slowMo?: number
   timeout?: number
@@ -49,44 +52,20 @@ interface CommonOptions {
   inlineCookiesJson?: string
   inlineCookiesBase64?: string
   inlineCookiesFile?: string
-  authToken?: string
-  username?: string
-  password?: string
-  otp?: string
-  opUsername?: string
-  opPassword?: string
-  opOtp?: string
-  opVault?: string
-  opItem?: string
-  opUsernameField?: string
-  opPasswordField?: string
-  opOtpField?: string
-  bwItem?: string
-  bwSession?: string
-  lpassItem?: string
-  lpassOtpField?: string
-  kpxDb?: string
-  kpxEntry?: string
-  kpxKeyfile?: string
-  kpxPassword?: string
-  kpxPwStdin?: boolean
 }
 
-interface TokenCliOptions extends CommonOptions {
-  tokenName?: string
-  tokenDescription?: string
-  tokenExpires?: string | number
-  tokenBypass2fa?: boolean
-  tokenCidr?: string[]
-  tokenPackages?: string[]
-  tokenScopes?: string[]
-  tokenOrgs?: string[]
-  tokenPackagesPermission?: string
-  tokenOrgsPermission?: string
-  sessionToken?: string
-  printToken?: boolean
-  output?: string
-  pollInterval?: number
+interface WorkflowInitOptions {
+  file?: string
+  pm?: string
+  node?: string
+  trigger?: string
+  tagPattern?: string
+  workflowDispatch?: boolean
+  buildCommand?: string
+  skipBuild?: boolean
+  publishCommand?: string
+  force?: boolean
+  verbose?: boolean
 }
 
 preloadEnv()
@@ -97,14 +76,12 @@ const targetArgs = {
   repo: { type: 'string', description: 'GitHub repo name (e.g., my-repo)' },
   workflow: { type: 'string', description: 'Workflow filename (e.g., npm-release.yml)' },
   environment: { type: 'string', description: 'GitHub environment (optional)' },
-  publisher: { type: 'string', description: 'Publisher type: github|gitlab' },
   maintainer: { type: 'string', description: 'Maintainer (optional)' },
   'publishing-access': { type: 'string', description: 'disallow-tokens|allow-bypass-token|skip' },
   'auto-repo': { type: 'boolean', description: 'Infer owner/repo from git remote' }
 } as const
 
 const browserArgs = {
-  'login-mode': { type: 'string', description: 'Login mode: auto|browser (browser uses existing session/manual login)' },
   headless: { type: 'boolean', description: 'Run browser headless' },
   'slow-mo': { type: 'string', description: 'Slow down Playwright actions (ms)' },
   timeout: { type: 'string', description: 'Timeout in ms for actions' },
@@ -119,31 +96,7 @@ const browserArgs = {
   'import-cookies': { type: 'boolean', description: 'Import npm cookies from Chrome profile into the session (browser mode)' },
   'inline-cookies-json': { type: 'string', description: 'Inline cookie JSON payload (sweet-cookie format)' },
   'inline-cookies-base64': { type: 'string', description: 'Inline cookie base64 payload (sweet-cookie format)' },
-  'inline-cookies-file': { type: 'string', description: 'Path to inline cookie payload file (sweet-cookie format)' },
-  'auth-token': { type: 'string', description: 'Granular access token for API-based Trusted Publisher setup' }
-} as const
-
-const credentialArgs = {
-  username: { type: 'string', description: 'npm username/email (discouraged; prefer 1Password)' },
-  password: { type: 'string', description: 'npm password (discouraged; prefer 1Password)' },
-  otp: { type: 'string', description: 'npm 2FA code' },
-  'op-username': { type: 'string', description: '1Password op:// reference for username' },
-  'op-password': { type: 'string', description: '1Password op:// reference for password' },
-  'op-otp': { type: 'string', description: '1Password op:// reference for OTP' },
-  'op-vault': { type: 'string', description: '1Password vault name for item lookup' },
-  'op-item': { type: 'string', description: '1Password item name for lookup' },
-  'op-username-field': { type: 'string', description: '1Password field for username (default: username)' },
-  'op-password-field': { type: 'string', description: '1Password field for password (default: password)' },
-  'op-otp-field': { type: 'string', description: '1Password field for OTP (default: one-time password)' },
-  'bw-item': { type: 'string', description: 'Bitwarden item id or name' },
-  'bw-session': { type: 'string', description: 'Bitwarden session token (optional)' },
-  'lpass-item': { type: 'string', description: 'LastPass item name or id' },
-  'lpass-otp-field': { type: 'string', description: 'LastPass field name for OTP (optional)' },
-  'kpx-db': { type: 'string', description: 'KeePassXC database path' },
-  'kpx-entry': { type: 'string', description: 'KeePassXC entry path' },
-  'kpx-keyfile': { type: 'string', description: 'KeePassXC key file path' },
-  'kpx-password': { type: 'string', description: 'KeePassXC database password' },
-  'kpx-pw-stdin': { type: 'boolean', description: 'Use keepassxc-cli --pw-stdin when supported' }
+  'inline-cookies-file': { type: 'string', description: 'Path to inline cookie payload file (sweet-cookie format)' }
 } as const
 
 const envArgs = {
@@ -153,27 +106,23 @@ const envArgs = {
 const commonArgs = {
   ...targetArgs,
   ...browserArgs,
-  ...credentialArgs,
   verbose: { type: 'boolean', description: 'Verbose output' },
   ...envArgs
 } as const
 
-const tokenArgs = {
-  name: { type: 'string', description: 'Token name (required)' },
-  description: { type: 'string', description: 'Token description' },
-  expires: { type: 'string', description: 'Token expiration (e.g., 30d or 2026-02-01T00:00:00Z)' },
-  'bypass-2fa': { type: 'boolean', description: 'Enable bypass 2FA (recommended for automation)' },
-  cidr: { type: 'string', description: 'Comma-separated CIDR allowlist' },
-  packages: { type: 'string', description: 'Comma-separated package names' },
-  scopes: { type: 'string', description: 'Comma-separated scopes' },
-  orgs: { type: 'string', description: 'Comma-separated orgs' },
-  'packages-permission': { type: 'string', description: 'no-access|read-only|read-write' },
-  'orgs-permission': { type: 'string', description: 'no-access|read-only|read-write' },
-  'session-token': { type: 'string', description: 'npm session token (from npm login --auth-type=web)' },
-  'print-token': { type: 'boolean', description: 'Print the token to stdout' },
-  output: { type: 'string', description: 'Write token JSON to this path (0600)' },
-  'poll-interval': { type: 'string', description: 'Polling interval for WebAuthn doneUrl (ms)' },
-  timeout: { type: 'string', description: 'Timeout for WebAuthn approval (ms)' }
+const workflowArgs = {
+  file: { type: 'string', description: 'Workflow filename (default: npm-release.yml)' },
+  pm: { type: 'string', description: 'Package manager: pnpm|npm (default: auto)' },
+  node: { type: 'string', description: 'Node version (default: 22)' },
+  trigger: { type: 'string', description: 'Trigger: release|tag (default: release)' },
+  'tag-pattern': { type: 'string', description: 'Tag pattern for tag trigger (default: v*)' },
+  'workflow-dispatch': { type: 'string', description: 'Enable workflow_dispatch (default: true)' },
+  'build-command': { type: 'string', description: 'Build command (auto-detected when possible)' },
+  'skip-build': { type: 'string', description: 'Skip build step (true|false)' },
+  'publish-command': { type: 'string', description: 'Publish command (default: npm publish --access public --provenance)' },
+  force: { type: 'string', description: 'Overwrite existing workflow file (true|false)' },
+  verbose: commonArgs.verbose,
+  'env-file': commonArgs['env-file']
 } as const
 
 const main = defineCommand({
@@ -197,30 +146,6 @@ const main = defineCommand({
       },
       async run({ args }) {
         await runEnsure({ ...normalizeArgs(args), dryRun: Boolean((args as any)['dry-run']) })
-      }
-    }),
-    capture: defineCommand({
-      meta: { name: 'capture', description: 'Capture Trusted Publisher form template for API mode' },
-      args: commonArgs,
-      async run({ args }) {
-        await runCaptureTemplate(normalizeArgs(args))
-      }
-    }),
-    token: defineCommand({
-      meta: { name: 'token', description: 'Create granular access tokens for npm automation' },
-      subCommands: {
-        create: defineCommand({
-          meta: { name: 'create', description: 'Create a granular access token (WebAuthn-friendly)' },
-          args: {
-            ...tokenArgs,
-            ...credentialArgs,
-            verbose: commonArgs.verbose,
-            ...envArgs
-          },
-          async run({ args }) {
-            await runTokenCreate(normalizeTokenArgs(args))
-          }
-        })
       }
     }),
     chrome: defineCommand({
@@ -253,6 +178,18 @@ const main = defineCommand({
           }
         })
       }
+    }),
+    workflow: defineCommand({
+      meta: { name: 'workflow', description: 'Generate npm release workflows' },
+      subCommands: {
+        init: defineCommand({
+          meta: { name: 'init', description: 'Create a GitHub Actions workflow for npm publishing' },
+          args: workflowArgs,
+          async run({ args }) {
+            await runWorkflowInit(normalizeWorkflowArgs(args))
+          }
+        })
+      }
     })
   }
 })
@@ -262,21 +199,18 @@ runMain(main)
 async function runCheck(options: CommonOptions): Promise<void> {
   const logger = createLogger(Boolean(options.verbose))
   const target = resolveTarget(options)
-  const credentialOptions = resolveCredentialOptions(options)
-  const loginMode = resolveLoginMode(options, credentialOptions)
-  const creds = await resolveCredentials(credentialOptions, false, logger, loginMode !== 'auto')
-  const browserOptions = await resolveBrowserOptions(options, loginMode, logger)
+  const browserOptions = await resolveBrowserOptions(options, logger)
   const session = await launchBrowser(browserOptions)
-  await applyBrowserCookies(session, browserOptions, loginMode, options, logger)
+  await applyBrowserCookies(session, browserOptions, options, logger)
 
   try {
-    await ensureLoggedIn(session.page, creds, logger, buildEnsureOptions(options, loginMode))
+    await ensureLoggedIn(session.page, logger, buildEnsureOptions(options))
     const status = await ensureTrustedPublisher(session.page, target, logger, {
-      ...buildEnsureOptions(options, loginMode),
+      ...buildEnsureOptions(options),
       dryRun: true
     })
     const accessStatus = await ensurePublishingAccess(session.page, target, logger, {
-      ...buildEnsureOptions(options, loginMode),
+      ...buildEnsureOptions(options),
       dryRun: true
     })
     if (status === 'exists' && accessStatus === 'ok') {
@@ -295,36 +229,19 @@ async function runCheck(options: CommonOptions): Promise<void> {
 async function runEnsure(options: CommonOptions & { dryRun?: boolean }): Promise<void> {
   const logger = createLogger(Boolean(options.verbose))
   const target = resolveTarget(options)
-  const authToken = resolveAuthToken(options, process.env)
 
-  if (authToken) {
-    const config = await readConfig(process.env)
-    const template = config.trustedPublisherTemplate
-    if (!template) {
-      throw new Error('No trusted publisher template found. Run `npm-trustme capture --login-mode browser` first.')
-    }
-    await applyTrustedPublisherViaToken(template, target, authToken, logger)
-    if (target.publishingAccess !== 'skip') {
-      logger.warn('Publishing access update skipped in token mode. Rerun with --publishing-access skip or use browser mode.')
-    }
-    return
-  }
-
-  const credentialOptions = resolveCredentialOptions(options)
-  const loginMode = resolveLoginMode(options, credentialOptions)
-  const creds = await resolveCredentials(credentialOptions, loginMode === 'auto', logger, loginMode !== 'auto')
-  const browserOptions = await resolveBrowserOptions(options, loginMode, logger)
+  const browserOptions = await resolveBrowserOptions(options, logger)
   const session = await launchBrowser(browserOptions)
-  await applyBrowserCookies(session, browserOptions, loginMode, options, logger)
+  await applyBrowserCookies(session, browserOptions, options, logger)
 
   try {
-    await ensureLoggedIn(session.page, creds, logger, buildEnsureOptions(options, loginMode))
+    await ensureLoggedIn(session.page, logger, buildEnsureOptions(options))
     const status = await ensureTrustedPublisher(session.page, target, logger, {
-      ...buildEnsureOptions(options, loginMode),
+      ...buildEnsureOptions(options),
       dryRun: options.dryRun
     })
     const accessStatus = await ensurePublishingAccess(session.page, target, logger, {
-      ...buildEnsureOptions(options, loginMode),
+      ...buildEnsureOptions(options),
       dryRun: options.dryRun
     })
     if (status === 'dry-run' || accessStatus === 'dry-run') {
@@ -333,91 +250,6 @@ async function runEnsure(options: CommonOptions & { dryRun?: boolean }): Promise
   } finally {
     await saveStorageState(session.context, options.storage)
     await closeBrowser(session)
-  }
-}
-
-async function runCaptureTemplate(options: CommonOptions): Promise<void> {
-  const logger = createLogger(Boolean(options.verbose))
-  const target = resolveTarget(options)
-  const credentialOptions = resolveCredentialOptions(options)
-  const loginMode = resolveLoginMode(options, credentialOptions)
-  const creds = await resolveCredentials(credentialOptions, loginMode === 'auto', logger, loginMode !== 'auto')
-  const browserOptions = await resolveBrowserOptions(options, loginMode, logger)
-  const session = await launchBrowser(browserOptions)
-  await applyBrowserCookies(session, browserOptions, loginMode, options, logger)
-
-  try {
-    await ensureLoggedIn(session.page, creds, logger, buildEnsureOptions(options, loginMode))
-    const template = await captureTrustedPublisherTemplate(session.page, target, logger, buildEnsureOptions(options, loginMode))
-    await writeConfig({ trustedPublisherTemplate: template }, process.env)
-    logger.success('Trusted publisher template saved to config.')
-  } finally {
-    await saveStorageState(session.context, options.storage)
-    await closeBrowser(session)
-  }
-}
-
-async function runTokenCreate(options: TokenCliOptions): Promise<void> {
-  const logger = createLogger(Boolean(options.verbose))
-  const credentialOptions = resolveCredentialOptions(options)
-  const interactive = Boolean(process.stdin.isTTY && process.stdout.isTTY)
-  const creds = await resolveCredentials(credentialOptions, interactive, logger)
-  if (!creds) {
-    throw new Error('Missing npm password (provide --password/--op-* or env vars).')
-  }
-
-  const tokenName = options.tokenName
-  if (!tokenName) {
-    throw new Error('Missing required --name for token create.')
-  }
-
-  const sessionToken = options.sessionToken || getNpmSessionToken()
-  if (!sessionToken) {
-    throw new Error('Missing npm session token. Run `npm login --auth-type=web` or set NPM_TRUSTME_SESSION_TOKEN.')
-  }
-
-  const bypass2fa = options.tokenBypass2fa ?? true
-  const tokenOptions = {
-    name: tokenName,
-    description: options.tokenDescription,
-    expires: options.tokenExpires,
-    bypass2fa,
-    cidr: options.tokenCidr,
-    packages: options.tokenPackages,
-    scopes: options.tokenScopes,
-    orgs: options.tokenOrgs,
-    packagesPermission: normalizePermission(options.tokenPackagesPermission, 'packages'),
-    orgsPermission: normalizePermission(options.tokenOrgsPermission, 'orgs'),
-    otp: options.otp || creds.otp,
-    timeoutMs: options.timeout,
-    pollIntervalMs: options.pollInterval
-  }
-
-  const result = await createAccessToken(sessionToken, creds.password, tokenOptions, logger)
-  const tokenValue = result.token || result.key
-
-  if (tokenValue) {
-    logger.success(`Token created: ${redact(tokenValue)}`)
-  } else {
-    logger.success('Token created.')
-  }
-
-  const outputPath = resolveTokenOutput(options, process.env)
-  if (outputPath && tokenValue) {
-    await writeTokenOutput(outputPath, result, tokenValue, logger)
-  } else if (outputPath && !tokenValue) {
-    logger.warn(`Token created but npm did not return the token value; not writing to ${outputPath}.`)
-  }
-
-  const shouldPrint = resolvePrintToken(options, process.env)
-  if (shouldPrint) {
-    if (!tokenValue) {
-      logger.warn('Token created but npm did not return the token value.')
-    } else {
-      process.stdout.write(`${tokenValue}\n`)
-    }
-  } else if (!outputPath) {
-    logger.warn('Token created but not printed or stored. Use --print-token or --output <path>.')
   }
 }
 
@@ -470,8 +302,8 @@ async function runChromeStart(options: CommonOptions): Promise<void> {
   )
 
   logger.info(`Chrome profile directory: ${chromeUserDataDir}`)
-  logger.info('Install the 1Password extension and sign in to npm once in this Chrome profile.')
-  logger.info('Then run: npm-trustme ensure --login-mode browser')
+  logger.info('Sign in to npm once in this Chrome profile (passkey or security key).')
+  logger.info('Then run: npm-trustme ensure')
 }
 
 async function runChromeStatus(options: CommonOptions): Promise<void> {
@@ -505,6 +337,63 @@ async function runChromeStatus(options: CommonOptions): Promise<void> {
   }
 }
 
+async function runWorkflowInit(options: WorkflowInitOptions): Promise<void> {
+  const logger = createLogger(Boolean(options.verbose))
+  const rootDir = process.cwd()
+  const fileName = (options.file || 'npm-release.yml').trim()
+  if (!fileName) {
+    throw new Error('Workflow filename cannot be empty.')
+  }
+
+  const detectedPm = detectPackageManager(rootDir)
+  const packageManager = normalizePackageManager(options.pm, detectedPm)
+  const trigger = normalizeTrigger(options.trigger)
+  const tagPattern = resolveTagPattern(options.tagPattern)
+  const workflowDispatch = options.workflowDispatch ?? true
+  const nodeVersion = (options.node || '22').trim()
+
+  const installCommand = resolveInstallCommand(rootDir, packageManager)
+  const buildCommand = options.skipBuild
+    ? undefined
+    : options.buildCommand || detectBuildCommand(rootDir, packageManager)
+  const publishCommand = (options.publishCommand || 'npm publish --access public --provenance').trim()
+
+  const workflow = renderNpmReleaseWorkflow({
+    nodeVersion,
+    packageManager,
+    trigger,
+    tagPattern,
+    workflowDispatch,
+    installCommand,
+    buildCommand,
+    publishCommand
+  })
+
+  const workflowsDir = path.resolve(rootDir, '.github', 'workflows')
+  const outputPath = path.resolve(workflowsDir, path.basename(fileName))
+
+  if (existsSync(outputPath) && !options.force) {
+    throw new Error(`Workflow already exists at ${outputPath}. Use --force true to overwrite.`)
+  }
+
+  await mkdir(workflowsDir, { recursive: true })
+  await writeFile(outputPath, `${workflow}\n`, 'utf8')
+
+  logger.success(`Wrote workflow to ${outputPath}.`)
+  if (buildCommand) {
+    logger.info(`Build step: ${buildCommand}`)
+  } else {
+    logger.info('Build step skipped.')
+  }
+  logger.info(`Publish command: ${publishCommand}`)
+  if (trigger === 'tag') {
+    logger.info(`Tag trigger pattern: ${tagPattern}`)
+  }
+  if (packageManager !== detectedPm) {
+    logger.info(`Package manager override: ${packageManager} (detected ${detectedPm})`)
+  }
+}
+
 function normalizeArgs(raw: Record<string, unknown>): CommonOptions {
   return {
     package: stringArg(raw.package),
@@ -512,10 +401,8 @@ function normalizeArgs(raw: Record<string, unknown>): CommonOptions {
     repo: stringArg(raw.repo),
     workflow: stringArg(raw.workflow),
     environment: stringArg(raw.environment),
-    publisher: stringArg(raw.publisher),
     maintainer: stringArg(raw.maintainer),
     publishingAccess: stringArg((raw as any)['publishing-access']),
-    loginMode: stringArg((raw as any)['login-mode']),
     headless: Boolean(raw.headless),
     slowMo: numberArg((raw as any)['slow-mo']),
     timeout: numberArg(raw.timeout),
@@ -532,73 +419,29 @@ function normalizeArgs(raw: Record<string, unknown>): CommonOptions {
     importCookies: Boolean((raw as any)['import-cookies']),
     inlineCookiesJson: stringArg((raw as any)['inline-cookies-json']),
     inlineCookiesBase64: stringArg((raw as any)['inline-cookies-base64']),
-    inlineCookiesFile: stringArg((raw as any)['inline-cookies-file']),
-    authToken: stringArg((raw as any)['auth-token']),
-    username: stringArg(raw.username),
-    password: stringArg(raw.password),
-    otp: stringArg(raw.otp),
-    opUsername: stringArg((raw as any)['op-username']),
-    opPassword: stringArg((raw as any)['op-password']),
-    opOtp: stringArg((raw as any)['op-otp']),
-    opVault: stringArg((raw as any)['op-vault']),
-    opItem: stringArg((raw as any)['op-item']),
-    opUsernameField: stringArg((raw as any)['op-username-field']),
-    opPasswordField: stringArg((raw as any)['op-password-field']),
-    opOtpField: stringArg((raw as any)['op-otp-field']),
-    bwItem: stringArg((raw as any)['bw-item']),
-    bwSession: stringArg((raw as any)['bw-session']),
-    lpassItem: stringArg((raw as any)['lpass-item']),
-    lpassOtpField: stringArg((raw as any)['lpass-otp-field']),
-    kpxDb: stringArg((raw as any)['kpx-db']),
-    kpxEntry: stringArg((raw as any)['kpx-entry']),
-    kpxKeyfile: stringArg((raw as any)['kpx-keyfile']),
-    kpxPassword: stringArg((raw as any)['kpx-password']),
-    kpxPwStdin: Boolean((raw as any)['kpx-pw-stdin'])
+    inlineCookiesFile: stringArg((raw as any)['inline-cookies-file'])
   }
 }
 
-function normalizeTokenArgs(raw: Record<string, unknown>): TokenCliOptions {
-  const base = normalizeArgs(raw)
-  const expiresRaw = stringArg((raw as any).expires)
-  const expires = expiresRaw ? toNumericOrString(expiresRaw) : undefined
-  const bypassRaw = (raw as any)['bypass-2fa']
+function normalizeWorkflowArgs(raw: Record<string, unknown>): WorkflowInitOptions {
+  const workflowDispatch = boolArg((raw as any)['workflow-dispatch'])
+  const skipBuild = boolArg((raw as any)['skip-build'])
+  const force = boolArg(raw.force)
   return {
-    ...base,
-    tokenName: stringArg((raw as any).name),
-    tokenDescription: stringArg((raw as any).description),
-    tokenExpires: expires,
-    tokenBypass2fa: bypassRaw === undefined ? undefined : Boolean(bypassRaw),
-    tokenCidr: splitList(stringArg((raw as any).cidr)),
-    tokenPackages: splitList(stringArg((raw as any).packages)),
-    tokenScopes: splitList(stringArg((raw as any).scopes)),
-    tokenOrgs: splitList(stringArg((raw as any).orgs)),
-    tokenPackagesPermission: stringArg((raw as any)['packages-permission']),
-    tokenOrgsPermission: stringArg((raw as any)['orgs-permission']),
-    sessionToken: stringArg((raw as any)['session-token']),
-    printToken: (raw as any)['print-token'] === undefined ? undefined : Boolean((raw as any)['print-token']),
-    output: stringArg((raw as any).output),
-    pollInterval: numberArg((raw as any)['poll-interval'])
+    file: stringArg(raw.file),
+    pm: stringArg(raw.pm),
+    node: stringArg(raw.node),
+    trigger: stringArg(raw.trigger),
+    tagPattern: stringArg((raw as any)['tag-pattern']),
+    workflowDispatch: workflowDispatch === undefined ? undefined : workflowDispatch,
+    buildCommand: stringArg((raw as any)['build-command']),
+    skipBuild: skipBuild === undefined ? undefined : skipBuild,
+    publishCommand: stringArg((raw as any)['publish-command']),
+    force: force === undefined ? undefined : force,
+    verbose: Boolean(raw.verbose)
   }
 }
 
-function splitList(value: string | undefined): string[] | undefined {
-  if (!value) return undefined
-  const items = value
-    .split(',')
-    .map(entry => entry.trim())
-    .filter(Boolean)
-  return items.length ? items : undefined
-}
-
-function toNumericOrString(value: string): string | number {
-  const num = Number(value)
-  if (!Number.isNaN(num) && value.trim() !== '') {
-    if (String(num) === value.trim()) {
-      return num
-    }
-  }
-  return value
-}
 
 function resolveTarget(options: CommonOptions): TrustedPublisherTarget {
   const env = process.env
@@ -607,7 +450,6 @@ function resolveTarget(options: CommonOptions): TrustedPublisherTarget {
   let repo = options.repo || env.NPM_TRUSTME_REPO
   let workflow = options.workflow || env.NPM_TRUSTME_WORKFLOW
   const environment = options.environment || env.NPM_TRUSTME_ENVIRONMENT
-  const publisher = (options.publisher || env.NPM_TRUSTME_PUBLISHER || 'github').toLowerCase()
   const maintainer = options.maintainer || env.NPM_TRUSTME_MAINTAINER
   const publishingAccess = normalizePublishingAccess(options.publishingAccess || env.NPM_TRUSTME_PUBLISHING_ACCESS)
 
@@ -633,44 +475,15 @@ function resolveTarget(options: CommonOptions): TrustedPublisherTarget {
     repo,
     workflow,
     environment,
-    provider: publisher === 'gitlab' ? 'gitlab' : 'github',
     maintainer,
     publishingAccess
   }
 }
 
-function resolveCredentialOptions(options: CommonOptions) {
-  const env = process.env
-  return {
-    username: options.username || env.NPM_TRUSTME_USERNAME || env.NPM_USERNAME,
-    password: options.password || env.NPM_TRUSTME_PASSWORD || env.NPM_PASSWORD,
-    otp: options.otp || env.NPM_TRUSTME_OTP || env.NPM_OTP,
-    opUsername: options.opUsername || env.NPM_TRUSTME_OP_USERNAME,
-    opPassword: options.opPassword || env.NPM_TRUSTME_OP_PASSWORD,
-    opOtp: options.opOtp || env.NPM_TRUSTME_OP_OTP,
-    opVault: options.opVault || env.NPM_TRUSTME_OP_VAULT,
-    opItem: options.opItem || env.NPM_TRUSTME_OP_ITEM,
-    opUsernameField: options.opUsernameField || env.NPM_TRUSTME_OP_USERNAME_FIELD,
-    opPasswordField: options.opPasswordField || env.NPM_TRUSTME_OP_PASSWORD_FIELD,
-    opOtpField: options.opOtpField || env.NPM_TRUSTME_OP_OTP_FIELD,
-    bwItem: options.bwItem || env.NPM_TRUSTME_BW_ITEM,
-    bwSession: options.bwSession || env.NPM_TRUSTME_BW_SESSION || env.BW_SESSION,
-    lpassItem: options.lpassItem || env.NPM_TRUSTME_LPASS_ITEM,
-    lpassOtpField: options.lpassOtpField || env.NPM_TRUSTME_LPASS_OTP_FIELD,
-    kpxDb: options.kpxDb || env.NPM_TRUSTME_KPX_DB,
-    kpxEntry: options.kpxEntry || env.NPM_TRUSTME_KPX_ENTRY,
-    kpxKeyfile: options.kpxKeyfile || env.NPM_TRUSTME_KPX_KEYFILE,
-    kpxPassword: options.kpxPassword || env.NPM_TRUSTME_KPX_PASSWORD,
-    kpxPwStdin: toBool(options.kpxPwStdin, env.NPM_TRUSTME_KPX_PW_STDIN),
-    requireOtp: false
-  }
-}
-
-function buildEnsureOptions(options: CommonOptions, loginMode: LoginMode) {
+function buildEnsureOptions(options: CommonOptions) {
   return {
     timeoutMs: options.timeout,
     screenshotDir: options.screenshotDir,
-    loginMode,
     headless: Boolean(options.headless)
   }
 }
@@ -687,10 +500,14 @@ function numberArg(value: unknown): number | undefined {
   return Number.isFinite(num) ? num : undefined
 }
 
-function toBool(value: boolean | undefined, envValue: string | undefined): boolean {
-  if (value !== undefined) return value
-  if (!envValue) return false
-  return ['1', 'true', 'yes', 'on'].includes(envValue.toLowerCase())
+function boolArg(value: unknown): boolean | undefined {
+  if (value === undefined || value === null) return undefined
+  if (typeof value === 'boolean') return value
+  const raw = String(value).trim().toLowerCase()
+  if (!raw) return undefined
+  if (['false', '0', 'no', 'off'].includes(raw)) return false
+  if (['true', '1', 'yes', 'on'].includes(raw)) return true
+  return Boolean(value)
 }
 
 function inferGitHubRepo(): { owner: string; repo: string } | null {
@@ -713,101 +530,7 @@ function normalizePublishingAccess(value?: string): PublishingAccess {
   return 'disallow-tokens'
 }
 
-type TokenPermission = 'read-only' | 'read-write' | 'no-access'
-
-function normalizePermission(value: string | undefined, label: 'packages' | 'orgs'): TokenPermission | undefined {
-  if (!value) return undefined
-  const normalized = value.toLowerCase()
-  if (normalized === 'read-only' || normalized === 'read-write' || normalized === 'no-access') {
-    return normalized as TokenPermission
-  }
-  throw new Error(`Invalid ${label} permission "${value}". Use read-only|read-write|no-access.`)
-}
-
-function resolveTokenOutput(options: TokenCliOptions, env: NodeJS.ProcessEnv): string | undefined {
-  return options.output || env.NPM_TRUSTME_TOKEN_PATH || undefined
-}
-
-function resolvePrintToken(options: TokenCliOptions, env: NodeJS.ProcessEnv): boolean {
-  if (options.printToken !== undefined) return options.printToken
-  if (env.NPM_TRUSTME_PRINT_TOKEN !== undefined) {
-    return ['1', 'true', 'yes', 'on'].includes(env.NPM_TRUSTME_PRINT_TOKEN.toLowerCase())
-  }
-  return false
-}
-
-function resolveAuthToken(options: CommonOptions, env: NodeJS.ProcessEnv): string | undefined {
-  return options.authToken || env.NPM_TRUSTME_AUTH_TOKEN || env.NPM_TRUSTME_TOKEN
-}
-
-async function writeTokenOutput(
-  outputPath: string,
-  result: TokenCreateResponse,
-  tokenValue: string,
-  logger: ReturnType<typeof createLogger>
-): Promise<void> {
-  await mkdir(path.dirname(outputPath), { recursive: true })
-  const payload = { ...result, token: tokenValue }
-  await writeFile(outputPath, JSON.stringify(payload, null, 2), { mode: 0o600 })
-  try {
-    await chmod(outputPath, 0o600)
-  } catch {
-    // ignore chmod failures
-  }
-  logger.success(`Saved token to ${outputPath}`)
-}
-
-type LoginMode = 'auto' | 'browser'
-
-function resolveLoginMode(options: CommonOptions, credentialOptions: ReturnType<typeof resolveCredentialOptions>): LoginMode {
-  const env = process.env
-  const raw = (options.loginMode || env.NPM_TRUSTME_LOGIN_MODE || '').toLowerCase()
-  if (raw === 'browser' || raw === 'manual') return 'browser'
-
-  if (hasBrowserProfile(options) && !hasCredentialConfig(credentialOptions)) {
-    return 'browser'
-  }
-  return 'auto'
-}
-
-function hasBrowserProfile(options: CommonOptions): boolean {
-  const env = process.env
-  return Boolean(
-    options.chromeProfile ||
-    options.chromeProfileDir ||
-    options.chromeUserDataDir ||
-    options.chromeCdpUrl ||
-    options.chromeDebugPort ||
-    env.NPM_TRUSTME_CHROME_PROFILE ||
-    env.NPM_TRUSTME_CHROME_PROFILE_DIR ||
-    env.NPM_TRUSTME_CHROME_USER_DATA_DIR ||
-    env.NPM_TRUSTME_CHROME_CDP_URL ||
-    env.NPM_TRUSTME_CHROME_DEBUG_PORT
-  )
-}
-
-function hasCredentialConfig(options: ReturnType<typeof resolveCredentialOptions>): boolean {
-  return Boolean(
-    options.username ||
-      options.password ||
-      options.otp ||
-      options.opUsername ||
-      options.opPassword ||
-      options.opOtp ||
-      options.opVault ||
-      options.opItem ||
-      options.bwItem ||
-      options.bwSession ||
-      options.lpassItem ||
-      options.lpassOtpField ||
-      options.kpxDb ||
-      options.kpxEntry ||
-      options.kpxKeyfile ||
-      options.kpxPassword
-  )
-}
-
-async function resolveBrowserOptions(options: CommonOptions, loginMode: LoginMode, logger: ReturnType<typeof createLogger>) {
+async function resolveBrowserOptions(options: CommonOptions, logger: ReturnType<typeof createLogger>) {
   const env = process.env
   const config = await readConfig(env)
   const resolved = {
@@ -822,11 +545,7 @@ async function resolveBrowserOptions(options: CommonOptions, loginMode: LoginMod
     chromeCdpUrl: options.chromeCdpUrl || env.NPM_TRUSTME_CHROME_CDP_URL || config.chromeCdpUrl,
     chromeDebugPort:
       options.chromeDebugPort || numberArg(env.NPM_TRUSTME_CHROME_DEBUG_PORT) || config.chromeDebugPort,
-    usePersistentProfile: loginMode !== 'browser'
-  }
-
-  if (loginMode !== 'browser') {
-    return resolved
+    usePersistentProfile: false
   }
 
   const cdpDetected = await resolveCdpUrlAuto(resolved, logger)
@@ -861,14 +580,18 @@ async function resolveBrowserOptions(options: CommonOptions, loginMode: LoginMod
 async function applyBrowserCookies(
   session: Awaited<ReturnType<typeof launchBrowser>>,
   browserOptions: Awaited<ReturnType<typeof resolveBrowserOptions>>,
-  loginMode: LoginMode,
   options: CommonOptions,
   logger: ReturnType<typeof createLogger>
 ) {
-  if (loginMode !== 'browser') return
   if (session.isPersistent) return
   const inlineCookies = resolveInlineCookies(options, process.env)
   if (!resolveImportCookies(options, process.env, inlineCookies)) return
+  const usingCdp = Boolean(browserOptions.chromeCdpUrl || browserOptions.chromeDebugPort)
+
+  if (usingCdp && !inlineCookies) {
+    logger.info('Skipping cookie import for CDP session (using existing Chrome profile).')
+    return
+  }
 
   if (inlineCookies) {
     const cookies = await readNpmCookiesForProfile({
@@ -887,7 +610,6 @@ async function applyBrowserCookies(
   }
 
   const cookieSources: Array<{ userDataDir?: string; profileDir?: string }> = []
-  const usingCdp = Boolean(browserOptions.chromeCdpUrl || browserOptions.chromeDebugPort)
   const defaultDir = defaultChromeUserDataDir()
 
   if (usingCdp && defaultDir) {

@@ -5,9 +5,15 @@
   "bin": {
     "npm-trustme": "dist/main.js"
   },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "dev": "tsx src/cli/main.ts",
     "build": "tsup src/cli/main.ts --format esm --dts --minify --out-dir dist",
+    "check:pack": "node scripts/check-pack-contents.js",
     "lint": "echo \"(no lint configured)\"",
     "typecheck": "tsc --noEmit",
     "test": "vitest",
@@ -15,7 +21,6 @@
     "coverage": "vitest run --coverage"
   },
   "dependencies": {
-    "@clack/prompts": "^0.11.0",
     "@steipete/sweet-cookie": "^0.1.0",
     "citty": "^0.1.6",
     "dotenv": "^16.4.5",
