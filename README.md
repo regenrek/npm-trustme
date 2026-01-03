@@ -35,7 +35,7 @@ npx npm-trustme ensure --inline-cookies-file /path/to/sweet-cookie.cookies.json
 
 ### Run
 ```bash
-npx npm-trustme ensure
+npx npm-trustme ensure --yes
 ```
 
 ### Generate npm-release.yml
@@ -69,7 +69,8 @@ npx npm-trustme ensure \
   --owner <GITHUB_OWNER> \
   --repo <GITHUB_REPO> \
   --workflow npm-release.yml \
-  --publishing-access disallow-tokens
+  --publishing-access disallow-tokens \
+  --yes
 ```
 
 ### Check only
@@ -134,6 +135,7 @@ Password-manager browser extensions can work, but require installing + signing i
   - `disallow-tokens` (recommended for OIDC-only)
   - `allow-bypass-token` (allows granular tokens with bypass 2FA)
   - `skip`
+- `npm-trustme ensure` prompts for confirmation; use `--yes` to skip (required in non-interactive runs).
 - The script never prints secrets; screenshots are saved only on errors when `--screenshot-dir` is provided.
 
 ## Security

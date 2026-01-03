@@ -12,7 +12,7 @@ Automate npm Trusted Publisher setup in the npm web UI. Requires a one-time WebA
 ## CLI Quick Start
 
 - One-time if browsers are missing: `npx playwright install`
-- Ensure (create if missing): `npx npm-trustme ensure ...`
+- Ensure (create if missing): `npx npm-trustme ensure --yes ...`
 - Check only: `npx npm-trustme check ...`
 - Generate workflow: `npx npm-trustme workflow init`
 - Doctor: `npx npm-trustme doctor`
@@ -46,13 +46,14 @@ npx npm-trustme ensure \
   --owner <GITHUB_OWNER> \
   --repo <GITHUB_REPO> \
   --workflow <WORKFLOW_FILE> \
-  --publishing-access <PUBLISHING_ACCESS>
+  --publishing-access <PUBLISHING_ACCESS> \
+  --yes
 ```
 
 Dedicated Chrome (keeps main browser open):
 ```
 npx npm-trustme chrome start
-npx npm-trustme ensure
+npx npm-trustme ensure --yes
 ```
 
 ## Notes
@@ -64,3 +65,4 @@ npx npm-trustme ensure
 - Chrome profile reuse (manual session): `--chrome-profile` / `--chrome-profile-dir` / `--chrome-user-data-dir` / `--chrome-path`.
 - Connect to an existing Chrome: `--chrome-cdp-url` or `--chrome-debug-port` (Chrome must be launched with remote debugging).
 - Cookie import: `--import-cookies` (default true) to copy npm cookies from your main Chrome profile.
+- `npm-trustme ensure` prompts for confirmation; use `--yes` in automated/agent runs.
