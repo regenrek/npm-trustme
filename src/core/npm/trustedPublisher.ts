@@ -25,7 +25,8 @@ const LOGIN_URL = 'https://www.npmjs.com/login'
 const PROFILE_URL = 'https://www.npmjs.com/settings/profile'
 
 export async function ensureLoggedIn(page: Page, logger: Logger, options: EnsureOptions): Promise<void> {
-  const loggedIn = await checkLoggedIn(page)
+  await navigateProfile(page)
+  const loggedIn = await isLoggedIn(page)
   if (loggedIn) {
     logger.info('Already logged in to npm.')
     return
@@ -99,6 +100,11 @@ export async function ensurePublishingAccess(
 
   await page.goto(accessUrl(target.packageName), { waitUntil: 'domcontentloaded' })
   await waitForAccessReady(page, target.packageName, logger, options)
+  const accessReady = await waitForPublishingAccessControls(page, logger, options)
+  if (!accessReady) {
+    logger.warn('Publishing access controls not available; skipping.')
+    return 'skipped'
+  }
 
   const desiredLabel = accessLabel(target.publishingAccess)
   const desiredValue = accessValue(target.publishingAccess)
@@ -121,7 +127,7 @@ export async function ensurePublishingAccess(
 
   await radio.scrollIntoViewIfNeeded().catch(() => {})
   await radio.click()
-  const save = await findButton(page, [/save/i, /update package settings/i, /update settings/i, /save changes/i])
+  const save = await findPublishingAccessSubmit(page)
   await save.click()
   const confirmed = await waitForPublishingAccess(page, desiredValue, logger, options)
   if (!confirmed) {
@@ -134,8 +140,7 @@ export async function ensurePublishingAccess(
   return 'updated'
 }
 
-async function checkLoggedIn(page: Page): Promise<boolean> {
-  await page.goto(PROFILE_URL, { waitUntil: 'domcontentloaded' })
+export async function isLoggedIn(page: Page): Promise<boolean> {
   if (page.url().includes('/login')) return false
 
   const loginSelectors = [
@@ -160,14 +165,16 @@ async function checkLoggedIn(page: Page): Promise<boolean> {
   return true
 }
 
+async function navigateProfile(page: Page): Promise<void> {
+  await page.goto(PROFILE_URL, { waitUntil: 'domcontentloaded' })
+}
+
 async function waitForManualLogin(page: Page, options: EnsureOptions): Promise<void> {
   const timeout = options.timeoutMs ?? 120000
   const start = Date.now()
   while (Date.now() - start < timeout) {
-    if (!page.url().includes('/login')) {
-      const loggedIn = await checkLoggedIn(page)
-      if (loggedIn) return
-    }
+    const loggedIn = await isLoggedIn(page)
+    if (loggedIn) return
     await page.waitForTimeout(1000)
   }
   const screenshot = await captureScreenshot(page, options.screenshotDir, 'login-timeout')
@@ -228,6 +235,29 @@ async function waitForAccessReady(
   const hint = screenshot ? ` (screenshot: ${screenshot})` : ''
   const current = page.url()
   throw new Error(`Timed out waiting for npm access page (current: ${current})${hint}`)
+}
+
+async function waitForPublishingAccessControls(
+  page: Page,
+  logger: Logger,
+  options: EnsureOptions
+): Promise<boolean> {
+  const timeout = options.timeoutMs ?? 60000
+  const start = Date.now()
+  while (Date.now() - start < timeout) {
+    if (await isTwoFactorGate(page)) {
+      if (!options.headless) {
+        await triggerSecurityKeyIfPresent(page, logger)
+        await page.waitForTimeout(1000)
+        continue
+      }
+      throw new Error('npm requires 2FA verification; rerun with headless=false.')
+    }
+    const locator = page.locator('input[name="publishingAccess"]').first()
+    if (await locator.isVisible({ timeout: 1000 }).catch(() => false)) return true
+    await page.waitForTimeout(1000)
+  }
+  return false
 }
 
 async function waitForTrustedPublisherForm(page: Page, logger: Logger, options: EnsureOptions): Promise<void> {
@@ -415,6 +445,17 @@ async function findButton(page: Page, patterns: RegExp[]): Promise<ReturnType<Pa
   const submit = page.locator('button[type="submit"]').first()
   if (await submit.isVisible({ timeout: 1500 }).catch(() => false)) return submit
   throw new Error('Unable to locate a submit button')
+}
+
+async function findPublishingAccessSubmit(page: Page): Promise<ReturnType<Page['locator']>> {
+  const form = page.locator('form#package-settings').first()
+  if (await form.isVisible({ timeout: 1500 }).catch(() => false)) {
+    const submit = form.locator('button[type="submit"]').first()
+    if (await submit.isVisible({ timeout: 1500 }).catch(() => false)) {
+      return submit
+    }
+  }
+  return findButton(page, [/update package settings/i, /save changes/i, /save/i, /update settings/i])
 }
 
 async function fillByLabelAny(page: Page, labels: RegExp[], value: string): Promise<void> {

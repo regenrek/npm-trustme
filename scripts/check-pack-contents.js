@@ -103,6 +103,7 @@ function main() {
 
   const packedPaths = getPackedFilePaths();
   const packedSet = new Set(packedPaths);
+  const requiredFiles = ['.codex/skills/npm-trustme/SKILL.md'];
 
   const unexpected = packedPaths
     .filter((p) => {
@@ -115,7 +116,9 @@ function main() {
     .filter((p) => !packedSet.has(p))
     .sort();
 
-  if (unexpected.length > 0 || missingRequired.length > 0) {
+  const missingRequiredFiles = requiredFiles.filter((p) => !packedSet.has(p)).sort();
+
+  if (unexpected.length > 0 || missingRequired.length > 0 || missingRequiredFiles.length > 0) {
     const lines = [];
     lines.push('npm pack allowlist check failed.');
 
@@ -129,6 +132,12 @@ function main() {
       lines.push('');
       lines.push('Missing required runtime files (bin targets):');
       for (const p of missingRequired) lines.push(`- ${p}`);
+    }
+
+    if (missingRequiredFiles.length > 0) {
+      lines.push('');
+      lines.push('Missing required package files:');
+      for (const p of missingRequiredFiles) lines.push(`- ${p}`);
     }
 
     throw new Error(lines.join('\n'));

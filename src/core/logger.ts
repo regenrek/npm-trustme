@@ -31,9 +31,3 @@ export function createLogger(verbose = false): Logger {
     debug: (msg) => log('debug', msg)
   }
 }
-
-export function redact(value: string | undefined): string {
-  if (!value) return ''
-  if (value.length <= 4) return '****'
-  return `${value.slice(0, 2)}...${value.slice(-2)}`
-}
