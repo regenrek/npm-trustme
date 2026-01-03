@@ -14,6 +14,7 @@ For WebAuthn-only accounts, bootstrap a short-lived bypass token with a one-time
 
 - One-time if browsers are missing: `npx playwright install`
 - Bootstrap token (recommended for WebAuthn-only): `npx npm-trustme token create ...`
+- Capture template (required for token mode): `npx npm-trustme capture ...`
 - Check only: `npx npm-trustme check ...`
 - Ensure (create if missing): `npx npm-trustme ensure ...`
 
@@ -56,6 +57,13 @@ npx npm-trustme ensure \
   --publishing-access <PUBLISHING_ACCESS>
 ```
 
+Token mode (no browser):
+```
+npx npm-trustme ensure \
+  --auth-token <GRANULAR_TOKEN> \
+  --publishing-access skip
+```
+
 ## Credentials
 
 Provider order (first wins):
@@ -77,6 +85,7 @@ Other providers (flags or envs):
 - `--storage` can persist Playwright storage state for faster re-runs.
 - `--login-mode browser` skips credential providers and waits for manual login.
 - Token bootstrap uses the npm registry web auth flow. If no session token is found, run `npm login --auth-type=web` first.
+- Token mode requires a captured template (`npm-trustme capture`) and skips publishing access updates.
 - Inline cookies (Sweet Cookie format) are supported: `--inline-cookies-json`, `--inline-cookies-base64`, or `--inline-cookies-file`.
 - Requires Node >= 22 (Sweet Cookie uses node:sqlite).
 - Chrome profile reuse (manual session): `--chrome-profile` / `--chrome-profile-dir` / `--chrome-user-data-dir` / `--chrome-path`.

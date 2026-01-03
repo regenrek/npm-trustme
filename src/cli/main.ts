@@ -15,6 +15,8 @@ import {
   ensureLoggedIn,
   ensureTrustedPublisher,
   ensurePublishingAccess,
+  captureTrustedPublisherTemplate,
+  applyTrustedPublisherViaToken,
   type TrustedPublisherTarget,
   type PublishingAccess
 } from '../core/npm/trustedPublisher.js'
@@ -47,6 +49,7 @@ interface CommonOptions {
   inlineCookiesJson?: string
   inlineCookiesBase64?: string
   inlineCookiesFile?: string
+  authToken?: string
   username?: string
   password?: string
   otp?: string
@@ -116,7 +119,8 @@ const browserArgs = {
   'import-cookies': { type: 'boolean', description: 'Import npm cookies from Chrome profile into the session (browser mode)' },
   'inline-cookies-json': { type: 'string', description: 'Inline cookie JSON payload (sweet-cookie format)' },
   'inline-cookies-base64': { type: 'string', description: 'Inline cookie base64 payload (sweet-cookie format)' },
-  'inline-cookies-file': { type: 'string', description: 'Path to inline cookie payload file (sweet-cookie format)' }
+  'inline-cookies-file': { type: 'string', description: 'Path to inline cookie payload file (sweet-cookie format)' },
+  'auth-token': { type: 'string', description: 'Granular access token for API-based Trusted Publisher setup' }
 } as const
 
 const credentialArgs = {
@@ -193,6 +197,13 @@ const main = defineCommand({
       },
       async run({ args }) {
         await runEnsure({ ...normalizeArgs(args), dryRun: Boolean((args as any)['dry-run']) })
+      }
+    }),
+    capture: defineCommand({
+      meta: { name: 'capture', description: 'Capture Trusted Publisher form template for API mode' },
+      args: commonArgs,
+      async run({ args }) {
+        await runCaptureTemplate(normalizeArgs(args))
       }
     }),
     token: defineCommand({
@@ -284,6 +295,21 @@ async function runCheck(options: CommonOptions): Promise<void> {
 async function runEnsure(options: CommonOptions & { dryRun?: boolean }): Promise<void> {
   const logger = createLogger(Boolean(options.verbose))
   const target = resolveTarget(options)
+  const authToken = resolveAuthToken(options, process.env)
+
+  if (authToken) {
+    const config = await readConfig(process.env)
+    const template = config.trustedPublisherTemplate
+    if (!template) {
+      throw new Error('No trusted publisher template found. Run `npm-trustme capture --login-mode browser` first.')
+    }
+    await applyTrustedPublisherViaToken(template, target, authToken, logger)
+    if (target.publishingAccess !== 'skip') {
+      logger.warn('Publishing access update skipped in token mode. Rerun with --publishing-access skip or use browser mode.')
+    }
+    return
+  }
+
   const credentialOptions = resolveCredentialOptions(options)
   const loginMode = resolveLoginMode(options, credentialOptions)
   const creds = await resolveCredentials(credentialOptions, loginMode === 'auto', logger, loginMode !== 'auto')
@@ -304,6 +330,27 @@ async function runEnsure(options: CommonOptions & { dryRun?: boolean }): Promise
     if (status === 'dry-run' || accessStatus === 'dry-run') {
       process.exitCode = 2
     }
+  } finally {
+    await saveStorageState(session.context, options.storage)
+    await closeBrowser(session)
+  }
+}
+
+async function runCaptureTemplate(options: CommonOptions): Promise<void> {
+  const logger = createLogger(Boolean(options.verbose))
+  const target = resolveTarget(options)
+  const credentialOptions = resolveCredentialOptions(options)
+  const loginMode = resolveLoginMode(options, credentialOptions)
+  const creds = await resolveCredentials(credentialOptions, loginMode === 'auto', logger, loginMode !== 'auto')
+  const browserOptions = await resolveBrowserOptions(options, loginMode, logger)
+  const session = await launchBrowser(browserOptions)
+  await applyBrowserCookies(session, browserOptions, loginMode, options, logger)
+
+  try {
+    await ensureLoggedIn(session.page, creds, logger, buildEnsureOptions(options, loginMode))
+    const template = await captureTrustedPublisherTemplate(session.page, target, logger, buildEnsureOptions(options, loginMode))
+    await writeConfig({ trustedPublisherTemplate: template }, process.env)
+    logger.success('Trusted publisher template saved to config.')
   } finally {
     await saveStorageState(session.context, options.storage)
     await closeBrowser(session)
@@ -486,6 +533,7 @@ function normalizeArgs(raw: Record<string, unknown>): CommonOptions {
     inlineCookiesJson: stringArg((raw as any)['inline-cookies-json']),
     inlineCookiesBase64: stringArg((raw as any)['inline-cookies-base64']),
     inlineCookiesFile: stringArg((raw as any)['inline-cookies-file']),
+    authToken: stringArg((raw as any)['auth-token']),
     username: stringArg(raw.username),
     password: stringArg(raw.password),
     otp: stringArg(raw.otp),
@@ -686,6 +734,10 @@ function resolvePrintToken(options: TokenCliOptions, env: NodeJS.ProcessEnv): bo
     return ['1', 'true', 'yes', 'on'].includes(env.NPM_TRUSTME_PRINT_TOKEN.toLowerCase())
   }
   return false
+}
+
+function resolveAuthToken(options: CommonOptions, env: NodeJS.ProcessEnv): string | undefined {
+  return options.authToken || env.NPM_TRUSTME_AUTH_TOKEN || env.NPM_TRUSTME_TOKEN
 }
 
 async function writeTokenOutput(

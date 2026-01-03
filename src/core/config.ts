@@ -9,6 +9,21 @@ export interface TrustmeConfig {
   chromeUserDataDir?: string
   chromeProfile?: string
   chromePath?: string
+  trustedPublisherTemplate?: TrustedPublisherTemplate
+}
+
+export interface TrustedPublisherTemplate {
+  action: string
+  method: 'POST' | 'GET'
+  staticFields: Record<string, string>
+  fieldMap: {
+    owner: string
+    repo: string
+    workflow: string
+    environment?: string
+    maintainer?: string
+    publisher?: string
+  }
 }
 
 const DEFAULT_CONFIG_NAME = 'config.json'

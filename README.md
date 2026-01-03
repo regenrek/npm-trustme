@@ -50,9 +50,28 @@ npx npm-trustme token create \
   --output .npm-trustme/token.json
 ```
 
+### Capture template (one-time)
+Run this once in browser mode to capture the Trusted Publisher form template:
+
+```bash
+npx npm-trustme capture \
+  --package <PACKAGE_NAME> \
+  --owner <GITHUB_OWNER> \
+  --repo <GITHUB_REPO> \
+  --workflow npm-release.yml \
+  --login-mode browser
+```
+
 ### Run
 ```bash
 npx npm-trustme ensure
+```
+
+### Run (token mode, no browser)
+```bash
+npx npm-trustme ensure \
+  --auth-token <GRANULAR_TOKEN> \
+  --publishing-access skip
 ```
 
 ### Example (explicit flags)
@@ -103,6 +122,7 @@ NPM_TRUSTME_OP_ITEM=npmjs.com
 # NPM_TRUSTME_SESSION_TOKEN=
 # NPM_TRUSTME_TOKEN_PATH=~/.npm-trustme/token.json
 # NPM_TRUSTME_PRINT_TOKEN=false
+# NPM_TRUSTME_AUTH_TOKEN=
 
 # Bitwarden CLI
 # NPM_TRUSTME_BW_ITEM=
@@ -151,6 +171,7 @@ NPM_TRUSTME_OP_ITEM=npmjs.com
 - Token bootstrap uses the npm registry web auth flow. If no session token is found, run `npm login --auth-type=web` first.
 - Cookie import uses `@steipete/sweet-cookie` (no native addons). Inline cookies from the Sweet Cookie extension are supported.
 - Cookie sync lets you keep Chrome open; npm-trustme copies npmjs.com cookies into a fresh browser context when possible.
+- Token mode requires a captured template (`npm-trustme capture`). It does not update publishing access; use `--publishing-access skip` or run browser mode for that step.
 - If the workflow filename includes a path, it is normalized to just the filename.
 - `publishing-access` options:
   - `disallow-tokens` (recommended for OIDC-only)

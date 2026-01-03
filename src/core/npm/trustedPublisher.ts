@@ -1,6 +1,7 @@
 import type { Page } from 'playwright'
 import type { Logger } from '../logger.js'
 import { captureScreenshot } from '../browser/session.js'
+import type { TrustedPublisherTemplate } from '../config.js'
 
 export type PublisherProvider = 'github' | 'gitlab'
 export type PublishingAccess = 'disallow-tokens' | 'allow-bypass-token' | 'skip'
@@ -28,6 +29,14 @@ export interface EnsureOptions {
   screenshotDir?: string
   loginMode?: 'auto' | 'browser'
   headless?: boolean
+}
+
+export interface TrustedPublisherFieldInput {
+  name: string
+  type?: string
+  value?: string
+  placeholder?: string
+  label?: string
 }
 
 const LOGIN_URL = 'https://www.npmjs.com/login'
@@ -105,6 +114,90 @@ export async function ensureTrustedPublisher(
 
   logger.success('Trusted publisher added.')
   return 'added'
+}
+
+export async function captureTrustedPublisherTemplate(
+  page: Page,
+  target: TrustedPublisherTarget,
+  logger: Logger,
+  options: EnsureOptions
+): Promise<TrustedPublisherTemplate> {
+  await page.goto(accessUrl(target.packageName), { waitUntil: 'domcontentloaded' })
+  await waitForAccessReady(page, target.packageName, logger, options)
+  await focusTrustedPublishersSection(page)
+
+  const form = await findTrustedPublisherForm(page)
+  if (!form) {
+    const screenshot = await captureScreenshot(page, options.screenshotDir, 'trusted-publisher-form-missing')
+    const hint = screenshot ? ` (screenshot: ${screenshot})` : ''
+    throw new Error(`Unable to locate trusted publisher form${hint}`)
+  }
+
+  const formData = await form.evaluate((formEl) => {
+    const action = formEl.getAttribute('action') || window.location.href
+    const method = (formEl.getAttribute('method') || 'POST').toUpperCase()
+    const inputs = Array.from(formEl.querySelectorAll('input, select, textarea'))
+      .map((input) => {
+        const element = input as HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement
+        const name = element.getAttribute('name') || ''
+        const type = element.getAttribute('type') || element.tagName.toLowerCase()
+        const value = (element as HTMLInputElement).value ?? ''
+        const placeholder = element.getAttribute('placeholder') || ''
+        let label = ''
+        if (element.id) {
+          const labelEl = formEl.querySelector(`label[for="${element.id}"]`)
+          if (labelEl && labelEl.textContent) label = labelEl.textContent.trim()
+        }
+        if (!label) {
+          const wrapperLabel = element.closest('label')
+          if (wrapperLabel && wrapperLabel.textContent) {
+            label = wrapperLabel.textContent.trim()
+          }
+        }
+        return {
+          name,
+          type,
+          value,
+          placeholder,
+          label
+        }
+      })
+      .filter((input) => input.name)
+    return { action, method, inputs }
+  })
+
+  const template = buildTrustedPublisherTemplate(formData.action, formData.method, formData.inputs)
+  logger.success('Captured trusted publisher template.')
+  return template
+}
+
+export async function applyTrustedPublisherViaToken(
+  template: TrustedPublisherTemplate,
+  target: TrustedPublisherTarget,
+  authToken: string,
+  logger: Logger
+): Promise<void> {
+  const actionUrl = normalizeTemplateAction(template.action)
+  const params = buildTrustedPublisherParams(template, target)
+  const response = await fetch(actionUrl, {
+    method: template.method || 'POST',
+    headers: {
+      Authorization: `Bearer ${authToken}`,
+      'Content-Type': 'application/x-www-form-urlencoded'
+    },
+    body: params.toString(),
+    redirect: 'manual'
+  })
+
+  if (response.status >= 200 && response.status < 400) {
+    logger.success('Trusted publisher applied via token.')
+    return
+  }
+
+  const text = await response.text().catch(() => '')
+  const snippet = text.trim().slice(0, 200)
+  const suffix = snippet ? `: ${snippet}` : ''
+  throw new Error(`Token apply failed (HTTP ${response.status})${suffix}`)
 }
 
 export async function ensurePublishingAccess(
@@ -325,6 +418,113 @@ async function waitForTrustedPublisherForm(page: Page, logger: Logger, options: 
   const screenshot = await captureScreenshot(page, options.screenshotDir, 'trusted-publisher-form-timeout')
   const hint = screenshot ? ` (screenshot: ${screenshot})` : ''
   throw new Error(`Timed out waiting for trusted publisher form${hint}`)
+}
+
+async function findTrustedPublisherForm(page: Page) {
+  const formByOidc = page.locator('form').filter({ has: page.locator('input[name^="oidc_"]') }).first()
+  if (await formByOidc.isVisible({ timeout: 1500 }).catch(() => false)) return formByOidc
+
+  const formByPublisher = page.locator('form').filter({ has: page.getByRole('button', { name: /set up connection/i }) }).first()
+  if (await formByPublisher.isVisible({ timeout: 1500 }).catch(() => false)) return formByPublisher
+
+  return null
+}
+
+export function buildTrustedPublisherTemplate(
+  action: string,
+  method: string,
+  inputs: TrustedPublisherFieldInput[]
+): TrustedPublisherTemplate {
+  const fieldMap = mapTrustedPublisherFields(inputs)
+  const staticFields: Record<string, string> = {}
+
+  for (const input of inputs) {
+    if (!input.name) continue
+    if (Object.values(fieldMap).includes(input.name)) continue
+    if (!input.value) continue
+    if (input.type && input.type.toLowerCase() === 'checkbox') continue
+    staticFields[input.name] = input.value
+  }
+
+  return {
+    action,
+    method: method.toUpperCase() === 'GET' ? 'GET' : 'POST',
+    staticFields,
+    fieldMap
+  }
+}
+
+function mapTrustedPublisherFields(inputs: TrustedPublisherFieldInput[]): TrustedPublisherTemplate['fieldMap'] {
+  const map: Partial<TrustedPublisherTemplate['fieldMap']> = {}
+  for (const input of inputs) {
+    const haystack = [input.name, input.label, input.placeholder]
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase()
+
+    if (!map.owner && /(owner|organization|org|user)/.test(haystack)) {
+      map.owner = input.name
+      continue
+    }
+    if (!map.repo && /(repo|repository|project)/.test(haystack)) {
+      map.repo = input.name
+      continue
+    }
+    if (!map.workflow && /(workflow|file[_\\s-]?path|workflow filename)/.test(haystack)) {
+      map.workflow = input.name
+      continue
+    }
+    if (!map.environment && /(environment)/.test(haystack)) {
+      map.environment = input.name
+      continue
+    }
+    if (!map.maintainer && /(maintainer)/.test(haystack)) {
+      map.maintainer = input.name
+      continue
+    }
+    if (!map.publisher && /(publisher|provider)/.test(haystack)) {
+      map.publisher = input.name
+      continue
+    }
+  }
+
+  if (!map.owner || !map.repo || !map.workflow) {
+    const missing = ['owner', 'repo', 'workflow'].filter((key) => !(map as any)[key])
+    throw new Error(`Unable to map trusted publisher fields: missing ${missing.join(', ')}`)
+  }
+
+  return map as TrustedPublisherTemplate['fieldMap']
+}
+
+function buildTrustedPublisherParams(
+  template: TrustedPublisherTemplate,
+  target: TrustedPublisherTarget
+): URLSearchParams {
+  const params = new URLSearchParams()
+  for (const [key, value] of Object.entries(template.staticFields)) {
+    params.set(key, value)
+  }
+
+  params.set(template.fieldMap.owner, target.owner)
+  params.set(template.fieldMap.repo, target.repo)
+  params.set(template.fieldMap.workflow, target.workflow)
+  if (template.fieldMap.environment && target.environment) {
+    params.set(template.fieldMap.environment, target.environment)
+  }
+  if (template.fieldMap.maintainer && target.maintainer) {
+    params.set(template.fieldMap.maintainer, target.maintainer)
+  }
+  if (template.fieldMap.publisher) {
+    params.set(template.fieldMap.publisher, target.provider)
+  }
+
+  return params
+}
+
+function normalizeTemplateAction(action: string): string {
+  if (/^https?:\/\//i.test(action)) return action
+  if (action.startsWith('/')) return `https://www.npmjs.com${action}`
+  return `https://www.npmjs.com/${action}`
 }
 
 function accessUrl(pkg: string): string {
