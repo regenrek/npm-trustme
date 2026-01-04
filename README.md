@@ -73,6 +73,12 @@ Check local readiness (Node, Playwright, Chrome, config):
 npx npm-trustme doctor
 ```
 
+### Wizard (interactive)
+```bash
+npx npm-trustme wizard
+```
+The wizard guides you through workflow setup, monorepo package selection, check, and ensure.
+
 ### Example (explicit flags)
 ```bash
 npx npm-trustme ensure \
