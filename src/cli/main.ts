@@ -40,8 +40,8 @@ import {
 } from '../core/targets/workspace.js'
 import type { WizardTargetInput, WizardWorkflowOptions } from '../core/wizard/types.js'
 import {
-  wizardIntro,
-  wizardOutro,
+  installIntro,
+  installOutro,
   promptWorkflowSetupChoice,
   promptWorkflowCustomize,
   promptWorkflowDetails,
@@ -267,11 +267,11 @@ const main = defineCommand({
         })
       }
     }),
-    wizard: defineCommand({
-      meta: { name: 'wizard', description: 'Interactive setup for trusted publishing' },
+    install: defineCommand({
+      meta: { name: 'install', description: 'Interactive setup for trusted publishing' },
       args: commonArgs,
       async run({ args }) {
-        await runWizard(normalizeArgs(args))
+        await runInstall(normalizeArgs(args))
       }
     })
   }
@@ -530,13 +530,13 @@ async function runWorkflowInit(options: WorkflowInitOptions): Promise<void> {
   logger.info('If another workflow creates the release, prefer workflow_run over on: release.')
 }
 
-async function runWizard(options: CommonOptions): Promise<void> {
+async function runInstall(options: CommonOptions): Promise<void> {
   const logger = createLogger(Boolean(options.verbose))
   if (!process.stdin.isTTY) {
-    throw new Error('Wizard requires an interactive TTY.')
+    throw new Error('Install requires an interactive TTY.')
   }
 
-  wizardIntro()
+  installIntro()
 
   const env = process.env
   const rootOverride = options.workspaceRoot || env.NPM_TRUSTME_WORKSPACE_ROOT
@@ -753,7 +753,7 @@ async function runWizard(options: CommonOptions): Promise<void> {
     await closeBrowser(session)
   }
 
-  wizardOutro('Wizard complete. Run `npm-trustme check` any time to verify.')
+  installOutro('Install complete. Run `npm-trustme check` any time to verify.')
 }
 
 function renderWorkflowPreview(

@@ -73,11 +73,11 @@ Check local readiness (Node, Playwright, Chrome, config):
 npx npm-trustme doctor
 ```
 
-### Wizard (interactive)
+### Install (interactive)
 ```bash
-npx npm-trustme wizard
+npx npm-trustme install
 ```
-The wizard guides you through workflow setup, monorepo package selection, check, and ensure.
+The install flow guides you through workflow setup, monorepo package selection, check, and ensure.
 When multiple packages are selected, you can apply the same repo/workflow/environment settings to the rest.
 
 ### Example (explicit flags)

@@ -11,11 +11,11 @@ import {
 } from '@clack/prompts'
 import type { WizardTargetInput, WizardWorkflowOptions } from './types.js'
 
-export function wizardIntro(): void {
-  intro('npm-trustme wizard')
+export function installIntro(): void {
+  intro('npm-trustme install')
 }
 
-export function wizardOutro(message: string): void {
+export function installOutro(message: string): void {
   outro(message)
 }
 
