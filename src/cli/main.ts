@@ -3,7 +3,7 @@ import { defineCommand, renderUsage, runMain, type ArgsDef, type CommandDef } fr
 import { config as loadEnv } from 'dotenv'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { existsSync } from 'node:fs'
+import { existsSync, statSync } from 'node:fs'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { execSync, spawn } from 'node:child_process'
 import { createInterface } from 'node:readline/promises'
@@ -19,6 +19,7 @@ import {
   type TrustedPublisherTarget,
   type PublishingAccess
 } from '../core/npm/trustedPublisher.js'
+import { fetchPackageMetadata, getLatestVersion, hasTrustedPublisher as hasRegistryTrustedPublisher, extractRepository } from '../core/npm/registry.js'
 import {
   detectBuildCommand,
   detectPackageManager,
@@ -28,10 +29,18 @@ import {
   resolveInstallCommand,
   resolveTagPattern
 } from '../core/workflow/npmRelease.js'
-import { inferPackageName, inferWorkflowFile, parseGitHubRemote } from '../core/targets/infer.js'
+import { inferWorkflowFile, parseGitHubRemote } from '../core/targets/infer.js'
+import {
+  resolveRepoRoot,
+  resolveWorkspaceRoot,
+  resolvePackageTarget,
+  type PackageResolutionReason,
+  type WorkspaceInfo
+} from '../core/targets/workspace.js'
 
 interface CommonOptions {
   package?: string
+  packagePath?: string
   owner?: string
   repo?: string
   workflow?: string
@@ -56,6 +65,7 @@ interface CommonOptions {
   inlineCookiesJson?: string
   inlineCookiesBase64?: string
   inlineCookiesFile?: string
+  workspaceRoot?: string
 }
 
 interface WorkflowInitOptions {
@@ -76,17 +86,29 @@ interface DoctorOptions {
   verbose?: boolean
 }
 
+interface ResolvedTarget extends TrustedPublisherTarget {
+  packageDir: string
+  packageJsonPath?: string
+  packageRepository?: string
+  packagePrivate?: boolean
+  rootDir: string
+  workspace?: WorkspaceInfo | null
+  resolutionReason: PackageResolutionReason
+}
+
 preloadEnv()
 
 const targetArgs = {
   package: { type: 'string', description: 'npm package name (e.g., my-package)' },
+  'package-path': { type: 'string', description: 'Path to package directory or package.json (monorepos)' },
   owner: { type: 'string', description: 'GitHub org/user (e.g., my-org)' },
   repo: { type: 'string', description: 'GitHub repo name (e.g., my-repo)' },
   workflow: { type: 'string', description: 'Workflow filename (e.g., npm-release.yml)' },
-  environment: { type: 'string', description: 'GitHub environment (optional)' },
+  environment: { type: 'string', description: 'GitHub environment (default: npm)' },
   maintainer: { type: 'string', description: 'Maintainer (optional)' },
   'publishing-access': { type: 'string', description: 'disallow-tokens|allow-bypass-token|skip' },
-  'auto-repo': { type: 'boolean', description: 'Infer owner/repo from git remote' }
+  'auto-repo': { type: 'boolean', description: 'Infer owner/repo from git remote' },
+  'workspace-root': { type: 'string', description: 'Workspace/repo root directory (optional)' }
 } as const
 
 const browserArgs = {
@@ -126,7 +148,7 @@ const doctorArgs = {
 const workflowArgs = {
   file: { type: 'string', description: 'Workflow filename (default: npm-release.yml)' },
   pm: { type: 'string', description: 'Package manager: pnpm|npm (default: auto)' },
-  node: { type: 'string', description: 'Node version (default: 22)' },
+  node: { type: 'string', description: 'Node version (default: 24)' },
   trigger: { type: 'string', description: 'Trigger: release|tag (default: release)' },
   'tag-pattern': { type: 'string', description: 'Tag pattern for tag trigger (default: v*)' },
   'workflow-dispatch': { type: 'string', description: 'Enable workflow_dispatch (default: true)' },
@@ -220,6 +242,8 @@ void runCli()
 async function runCheck(options: CommonOptions): Promise<void> {
   const logger = createLogger(Boolean(options.verbose))
   const target = resolveTarget(options)
+  logTargetResolution(target, logger)
+  const registryStatus = await reportRegistryStatus(target, logger)
   const browserOptions = await resolveBrowserOptions(options, logger)
   const session = await launchBrowser(browserOptions)
   await applyBrowserCookies(session, browserOptions, options, logger)
@@ -234,7 +258,8 @@ async function runCheck(options: CommonOptions): Promise<void> {
       ...buildEnsureOptions(options),
       dryRun: true
     })
-    if (status === 'exists' && accessStatus === 'ok') {
+    const registryOk = registryStatus?.hasTrustedPublisher === false ? false : true
+    if (status === 'exists' && accessStatus === 'ok' && registryOk) {
       logger.success('Trusted publisher + access settings present.')
       process.exitCode = 0
     } else {
@@ -250,6 +275,7 @@ async function runCheck(options: CommonOptions): Promise<void> {
 async function runEnsure(options: CommonOptions & { dryRun?: boolean }): Promise<void> {
   const logger = createLogger(Boolean(options.verbose))
   const target = resolveTarget(options)
+  logTargetResolution(target, logger)
 
   const confirmed = await confirmEnsure(target, options, logger)
   if (!confirmed) {
@@ -257,6 +283,7 @@ async function runEnsure(options: CommonOptions & { dryRun?: boolean }): Promise
     process.exitCode = 1
     return
   }
+  await reportRegistryStatus(target, logger)
 
   const browserOptions = await resolveBrowserOptions(options, logger)
   const session = await launchBrowser(browserOptions)
@@ -417,7 +444,7 @@ async function runWorkflowInit(options: WorkflowInitOptions): Promise<void> {
   const trigger = normalizeTrigger(options.trigger)
   const tagPattern = resolveTagPattern(options.tagPattern)
   const workflowDispatch = options.workflowDispatch ?? true
-  const nodeVersion = (options.node || '22').trim()
+  const nodeVersion = (options.node || '24').trim()
 
   const installCommand = resolveInstallCommand(rootDir, packageManager)
   const buildCommand = options.skipBuild
@@ -459,6 +486,8 @@ async function runWorkflowInit(options: WorkflowInitOptions): Promise<void> {
   if (packageManager !== detectedPm) {
     logger.info(`Package manager override: ${packageManager} (detected ${detectedPm})`)
   }
+  logger.info('Review the generated workflow and adapt steps/commands to your repo before relying on it.')
+  logger.info('If another workflow creates the release, prefer workflow_run over on: release.')
 }
 
 async function runDoctor(options: DoctorOptions): Promise<void> {
@@ -538,6 +567,7 @@ async function runDoctor(options: DoctorOptions): Promise<void> {
 function normalizeArgs(raw: Record<string, unknown>): CommonOptions {
   return {
     package: stringArg(raw.package),
+    packagePath: stringArg((raw as any)['package-path']),
     owner: stringArg(raw.owner),
     repo: stringArg(raw.repo),
     workflow: stringArg(raw.workflow),
@@ -561,7 +591,8 @@ function normalizeArgs(raw: Record<string, unknown>): CommonOptions {
     importCookies: Boolean((raw as any)['import-cookies']),
     inlineCookiesJson: stringArg((raw as any)['inline-cookies-json']),
     inlineCookiesBase64: stringArg((raw as any)['inline-cookies-base64']),
-    inlineCookiesFile: stringArg((raw as any)['inline-cookies-file'])
+    inlineCookiesFile: stringArg((raw as any)['inline-cookies-file']),
+    workspaceRoot: stringArg((raw as any)['workspace-root'])
   }
 }
 
@@ -585,19 +616,26 @@ function normalizeWorkflowArgs(raw: Record<string, unknown>): WorkflowInitOption
 }
 
 
-function resolveTarget(options: CommonOptions): TrustedPublisherTarget {
+function resolveTarget(options: CommonOptions): ResolvedTarget {
   const env = process.env
-  let packageName = options.package || env.NPM_TRUSTME_PACKAGE
+  const cwd = process.cwd()
+  const packageNameInput = options.package || env.NPM_TRUSTME_PACKAGE
+  const packagePathInput = options.packagePath || env.NPM_TRUSTME_PACKAGE_PATH
   let owner = options.owner || env.NPM_TRUSTME_OWNER
   let repo = options.repo || env.NPM_TRUSTME_REPO
   let workflow = options.workflow || env.NPM_TRUSTME_WORKFLOW
-  const environment = options.environment || env.NPM_TRUSTME_ENVIRONMENT
+  const environment = options.environment || env.NPM_TRUSTME_ENVIRONMENT || 'npm'
   const maintainer = options.maintainer || env.NPM_TRUSTME_MAINTAINER
   const publishingAccess = normalizePublishingAccess(options.publishingAccess || env.NPM_TRUSTME_PUBLISHING_ACCESS)
 
-  if (!packageName) {
-    packageName = inferPackageName(process.cwd()) ?? undefined
-  }
+  const rootOverride = options.workspaceRoot || env.NPM_TRUSTME_WORKSPACE_ROOT
+  const rootDir = resolveRootDir(cwd, rootOverride)
+  const resolvedPackage = resolvePackageTarget({
+    cwd,
+    rootDir,
+    packageName: packageNameInput,
+    packagePath: packagePathInput
+  })
 
   if ((!owner || !repo) && options.autoRepo) {
     const inferred = inferGitHubRepo()
@@ -608,11 +646,10 @@ function resolveTarget(options: CommonOptions): TrustedPublisherTarget {
   }
 
   if (!workflow) {
-    workflow = inferWorkflowFile(process.cwd()) ?? undefined
+    workflow = inferWorkflowFile(rootDir) ?? undefined
   }
 
   const missing: string[] = []
-  if (!packageName) missing.push('--package (or package.json#name)')
   if (!owner) missing.push('--owner (or git remote origin)')
   if (!repo) missing.push('--repo (or git remote origin)')
   if (!workflow) missing.push('--workflow (or .github/workflows/npm-release.yml)')
@@ -621,7 +658,6 @@ function resolveTarget(options: CommonOptions): TrustedPublisherTarget {
     throw new Error(`Missing required fields: ${missing.join(', ')}.`)
   }
 
-  const resolvedPackageName = packageName as string
   const resolvedOwner = owner as string
   const resolvedRepo = repo as string
   let resolvedWorkflow = workflow as string
@@ -631,14 +667,98 @@ function resolveTarget(options: CommonOptions): TrustedPublisherTarget {
   }
 
   return {
-    packageName: resolvedPackageName,
+    packageName: resolvedPackage.packageName,
     owner: resolvedOwner,
     repo: resolvedRepo,
     workflow: resolvedWorkflow,
     environment,
     maintainer,
-    publishingAccess
+    publishingAccess,
+    packageDir: resolvedPackage.packageDir,
+    packageJsonPath: resolvedPackage.packageJsonPath,
+    packageRepository: resolvedPackage.repository,
+    packagePrivate: resolvedPackage.private,
+    rootDir: resolvedPackage.rootDir,
+    workspace: resolvedPackage.workspace,
+    resolutionReason: resolvedPackage.reason
   }
+}
+
+function resolveRootDir(cwd: string, override?: string): string {
+  if (override) {
+    const resolved = path.resolve(override)
+    if (!existsSync(resolved)) {
+      throw new Error(`Workspace root not found: ${resolved}`)
+    }
+    const stat = statSync(resolved)
+    if (!stat.isDirectory()) {
+      throw new Error(`Workspace root must be a directory: ${resolved}`)
+    }
+    return resolved
+  }
+  return resolveWorkspaceRoot(cwd) || resolveRepoRoot(cwd) || cwd
+}
+
+function logTargetResolution(target: ResolvedTarget, logger: ReturnType<typeof createLogger>): void {
+  const relDir = path.relative(target.rootDir, target.packageDir) || '.'
+  const workspaceNote = target.workspace ? ` (workspace root: ${target.rootDir})` : ''
+  logger.info(`Resolved package: ${target.packageName} (${relDir})${workspaceNote}.`)
+  logger.debug(`Resolution reason: ${target.resolutionReason}.`)
+}
+
+async function reportRegistryStatus(
+  target: ResolvedTarget,
+  logger: ReturnType<typeof createLogger>
+): Promise<{ hasTrustedPublisher?: boolean } | null> {
+  try {
+    if (target.packagePrivate) {
+      logger.info('Package is marked private; skipping registry-based checks.')
+      return null
+    }
+    const meta = await fetchPackageMetadata(target.packageName)
+    if (!meta) {
+      logger.warn('Package not found on npm registry yet; skipping registry-based checks.')
+      return null
+    }
+    const latest = getLatestVersion(meta)
+    if (!latest) {
+      logger.warn('Unable to determine latest npm version; skipping trusted publisher status check.')
+      return null
+    }
+    const hasTp = hasRegistryTrustedPublisher(meta, latest)
+    if (hasTp) {
+      logger.success(`Latest npm version ${latest} is marked as Trusted Publishing.`)
+    } else {
+      logger.warn(`Latest npm version ${latest} is not marked as Trusted Publishing. Publish a new version after setup.`)
+    }
+
+    const expectedSlug = `${target.owner}/${target.repo}`
+    const registryRepo = parseRepositoryCandidate(extractRepository(meta))
+    if (registryRepo && registryRepo.slug !== expectedSlug) {
+      logger.warn(`Registry repository (${registryRepo.slug}) does not match ${expectedSlug}.`)
+    }
+    const packageRepo = parseRepositoryCandidate(target.packageRepository)
+    if (packageRepo && packageRepo.slug !== expectedSlug) {
+      logger.warn(`package.json repository (${packageRepo.slug}) does not match ${expectedSlug}.`)
+    }
+
+    return { hasTrustedPublisher: hasTp }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    logger.warn(`Registry check failed: ${message}`)
+    return null
+  }
+}
+
+function parseRepositoryCandidate(value: unknown): { owner: string; repo: string; slug: string } | null {
+  if (!value) return null
+  let raw: string | undefined
+  if (typeof value === 'string') raw = value
+  if (!raw && typeof value === 'object' && typeof (value as any).url === 'string') raw = (value as any).url
+  if (!raw) return null
+  const parsed = parseGitHubRemote(raw)
+  if (!parsed) return null
+  return { ...parsed, slug: `${parsed.owner}/${parsed.repo}` }
 }
 
 function buildEnsureOptions(options: CommonOptions) {

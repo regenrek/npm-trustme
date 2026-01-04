@@ -72,11 +72,20 @@ export function renderNpmReleaseWorkflow(spec: NpmReleaseWorkflowSpec): string {
   }
   if (spec.workflowDispatch) {
     triggerLines.push('  workflow_dispatch:')
+    triggerLines.push('    inputs:')
+    triggerLines.push('      tag:')
+    triggerLines.push('        description: Release tag to publish (e.g. v1.2.3)')
+    triggerLines.push('        required: true')
+    triggerLines.push('        type: string')
   }
 
   const steps: string[] = []
-  steps.push('      - name: Checkout code')
+  steps.push('      - name: Checkout')
   steps.push('        uses: actions/checkout@v4')
+  if (spec.trigger === 'release') {
+    steps.push('        with:')
+    steps.push('          ref: ${{ github.event.repository.default_branch }}')
+  }
   steps.push('')
   steps.push('      - name: Setup Node')
   steps.push('        uses: actions/setup-node@v4')
@@ -91,19 +100,40 @@ export function renderNpmReleaseWorkflow(spec: NpmReleaseWorkflowSpec): string {
   }
 
   steps.push('')
+  steps.push('      - name: Resolve release tag')
+  steps.push('        id: tag')
+  steps.push(
+    ...renderRunCommand(
+      [
+        'set -euo pipefail',
+        'if [[ \"${{ github.event_name }}\" == \"release\" ]]; then',
+        '  echo \"value=${{ github.event.release.tag_name }}\" >> \"$GITHUB_OUTPUT\"',
+        '  exit 0',
+        'fi',
+        'if [[ \"${{ github.event_name }}\" == \"workflow_dispatch\" ]]; then',
+        '  echo \"value=${{ inputs.tag }}\" >> \"$GITHUB_OUTPUT\"',
+        '  exit 0',
+        'fi',
+        'echo \"value=${{ github.ref_name }}\" >> \"$GITHUB_OUTPUT\"'
+      ].join('\n')
+    )
+  )
+
+  steps.push('')
   steps.push('      - name: Install dependencies')
-  steps.push(`        run: ${spec.installCommand}`)
+  steps.push(...renderRunCommand(spec.installCommand))
 
   if (spec.buildCommand) {
     steps.push('')
     steps.push('      - name: Build')
-    steps.push(`        run: ${spec.buildCommand}`)
+    steps.push(...renderRunCommand(spec.buildCommand))
   }
 
   steps.push('')
-  steps.push('      - name: Publish to npm (OIDC)')
-  steps.push(`        run: ${spec.publishCommand}`)
+  steps.push('      - name: Publish to npm (Trusted Publishing)')
+  steps.push(...renderRunCommand(spec.publishCommand))
   steps.push('        env:')
+  steps.push('          VERSION: ${{ steps.tag.outputs.value }}')
   steps.push("          NODE_AUTH_TOKEN: ''")
 
   return [
@@ -111,6 +141,10 @@ export function renderNpmReleaseWorkflow(spec: NpmReleaseWorkflowSpec): string {
     '',
     'on:',
     ...triggerLines,
+    '',
+    'concurrency:',
+    '  group: npm-release-${{ github.ref }}',
+    '  cancel-in-progress: false',
     '',
     'jobs:',
     '  publish:',
@@ -123,10 +157,19 @@ export function renderNpmReleaseWorkflow(spec: NpmReleaseWorkflowSpec): string {
   ].join('\n')
 }
 
+function renderRunCommand(command: string): string[] {
+  const normalized = command.trim()
+  if (!normalized) return []
+  if (normalized.includes('\n')) {
+    const lines = normalized.replace(/\r\n/g, '\n').split('\n')
+    return ['        run: |', ...lines.map(line => `          ${line}`)]
+  }
+  return [`        run: ${normalized}`]
+}
+
 function runScriptCommand(packageManager: PackageManager, script: string): string {
   if (packageManager === 'npm') {
     return `npm run ${script}`
   }
   return `${packageManager} ${script}`
 }
-
