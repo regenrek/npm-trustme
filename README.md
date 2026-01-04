@@ -45,16 +45,27 @@ Create a GitHub Actions workflow that publishes via Trusted Publishing:
 npx npm-trustme workflow init
 ```
 
+The generated workflow is a starting point - review and adapt the steps/commands for your repo before relying on it.
+
 Common overrides:
 ```bash
 npx npm-trustme workflow init \
   --file npm-release.yml \
   --pm pnpm \
-  --node 22 \
+  --node 24 \
   --trigger release \
   --workflow-dispatch true \
   --build-command "pnpm build"
 ```
+
+## Publishing checklist (npm + Homebrew)
+- Use Node 24 in the publish workflow (or npm >= 11.5.1).
+- Register Trusted Publisher for every npm package you publish (including platform-specific packages).
+- Workflow filename must match exactly (case + `.yml`).
+- If you set a GitHub Actions environment, the environment name must match in npm.
+- If a workflow creates a release, prefer `workflow_run` to trigger publishing.
+- Homebrew: use a GitHub App with Contents read/write on the tap repo; store App ID + private key as repo secrets; update the tap in CI.
+- Naming: npm binary packages should use `-x64`, not `-amd64`.
 
 ### Doctor
 Check local readiness (Node, Playwright, Chrome, config):
@@ -73,27 +84,37 @@ npx npm-trustme ensure \
   --yes
 ```
 
+### Monorepo example
+```bash
+npx npm-trustme ensure --package-path packages/my-package --yes
+```
+
 ### Check only
 ```bash
 npx npm-trustme check
 ```
+Checks UI configuration and reports the latest public npm version's trusted publishing status (if available).
 
 ### Auto-detection (default)
 If you omit flags, npm-trustme will infer:
-- `--package` from `package.json#name`
+- `--package` from the current workspace package (or repo root if not a workspace)
 - `--owner`/`--repo` from `git remote origin`
 - `--workflow` from `.github/workflows/npm-release.yml` (or the only workflow file)
+
+In monorepos with multiple packages, run from the package directory or pass `--package` / `--package-path`.
 
 ## Environment Variables
 ```bash
 NPM_TRUSTME_PACKAGE=<PACKAGE_NAME>
+NPM_TRUSTME_PACKAGE_PATH=packages/my-package
 NPM_TRUSTME_OWNER=<GITHUB_OWNER>
 NPM_TRUSTME_REPO=<GITHUB_REPO>
 NPM_TRUSTME_WORKFLOW=npm-release.yml
 NPM_TRUSTME_PUBLISHING_ACCESS=disallow-tokens
+NPM_TRUSTME_WORKSPACE_ROOT=/path/to/repo
 
-# Optional GitHub environment
-# NPM_TRUSTME_ENVIRONMENT=
+# Optional GitHub environment (default: npm)
+# NPM_TRUSTME_ENVIRONMENT=npm
 
 # Optional runtime tweaks
 # NPM_TRUSTME_STORAGE=.cache/npm-trustme-storage.json
@@ -122,6 +143,8 @@ Password-manager browser extensions can work, but require installing + signing i
 
 ## Notes
 - Requires Node >= 22 (Sweet Cookie uses node:sqlite).
+- Workflow template defaults to Node 24 and uses a release/tag resolver for Trusted Publishing.
+- If another workflow creates releases, prefer `workflow_run` to trigger publishing instead of `on: release`.
 - Chrome profile reuse: `--chrome-profile` / `--chrome-profile-dir` / `--chrome-user-data-dir` / `--chrome-path`.
 - Connect to an existing Chrome: `--chrome-cdp-url` or `--chrome-debug-port` (Chrome must be launched with remote debugging).
 - Cookie import can be toggled with `--import-cookies` or `NPM_TRUSTME_IMPORT_COOKIES` (default: true).

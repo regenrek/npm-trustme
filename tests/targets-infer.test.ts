@@ -3,6 +3,7 @@ import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import { inferPackageName, inferWorkflowFile, parseGitHubRemote } from '../src/core/targets/infer.js'
+import { resolvePackageTarget } from '../src/core/targets/workspace.js'
 
 function tempDir(prefix: string) {
   return mkdtempSync(resolve(tmpdir(), prefix))
@@ -15,6 +16,18 @@ describe('target inference', () => {
       repo: 'npm-trustme'
     })
     expect(parseGitHubRemote('https://github.com/regenrek/npm-trustme')).toEqual({
+      owner: 'regenrek',
+      repo: 'npm-trustme'
+    })
+    expect(parseGitHubRemote('git+https://github.com/regenrek/npm-trustme.git')).toEqual({
+      owner: 'regenrek',
+      repo: 'npm-trustme'
+    })
+    expect(parseGitHubRemote('github:regenrek/npm-trustme')).toEqual({
+      owner: 'regenrek',
+      repo: 'npm-trustme'
+    })
+    expect(parseGitHubRemote('regenrek/npm-trustme')).toEqual({
       owner: 'regenrek',
       repo: 'npm-trustme'
     })
@@ -45,5 +58,40 @@ describe('target inference', () => {
       rmSync(dir, { recursive: true, force: true })
     }
   })
-})
 
+  it('resolves workspace package based on cwd', () => {
+    const dir = tempDir('npm-trustme-workspace-')
+    try {
+      writeFileSync(resolve(dir, 'pnpm-workspace.yaml'), 'packages:\n  - packages/*\n', 'utf8')
+      const pkgADir = resolve(dir, 'packages', 'pkg-a')
+      const pkgBDir = resolve(dir, 'packages', 'pkg-b')
+      mkdirSync(pkgADir, { recursive: true })
+      mkdirSync(pkgBDir, { recursive: true })
+      writeFileSync(resolve(pkgADir, 'package.json'), JSON.stringify({ name: 'pkg-a' }), 'utf8')
+      writeFileSync(resolve(pkgBDir, 'package.json'), JSON.stringify({ name: 'pkg-b' }), 'utf8')
+
+      const resolved = resolvePackageTarget({ cwd: pkgADir, rootDir: dir })
+      expect(resolved.packageName).toBe('pkg-a')
+      expect(resolved.reason).toBe('workspace-cwd')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('requires explicit selection when multiple workspace packages exist', () => {
+    const dir = tempDir('npm-trustme-workspace-multi-')
+    try {
+      writeFileSync(resolve(dir, 'pnpm-workspace.yaml'), 'packages:\n  - packages/*\n', 'utf8')
+      const pkgADir = resolve(dir, 'packages', 'pkg-a')
+      const pkgBDir = resolve(dir, 'packages', 'pkg-b')
+      mkdirSync(pkgADir, { recursive: true })
+      mkdirSync(pkgBDir, { recursive: true })
+      writeFileSync(resolve(pkgADir, 'package.json'), JSON.stringify({ name: 'pkg-a' }), 'utf8')
+      writeFileSync(resolve(pkgBDir, 'package.json'), JSON.stringify({ name: 'pkg-b' }), 'utf8')
+
+      expect(() => resolvePackageTarget({ cwd: dir, rootDir: dir })).toThrow(/Multiple workspace packages/)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})

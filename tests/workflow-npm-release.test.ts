@@ -17,7 +17,7 @@ function createTempProject() {
 describe('npm release workflow', () => {
   it('renders a release trigger with workflow_dispatch', () => {
     const yaml = renderNpmReleaseWorkflow({
-      nodeVersion: '22',
+      nodeVersion: '24',
       packageManager: 'pnpm',
       trigger: 'release',
       tagPattern: 'v*',
@@ -29,13 +29,18 @@ describe('npm release workflow', () => {
     expect(yaml).toContain('release:')
     expect(yaml).toContain('types: [published]')
     expect(yaml).toContain('workflow_dispatch:')
+    expect(yaml).toContain('inputs:')
+    expect(yaml).toContain('tag:')
+    expect(yaml).toContain('Resolve release tag')
+    expect(yaml).toContain('concurrency:')
     expect(yaml).toContain('pnpm install --frozen-lockfile')
     expect(yaml).toContain('pnpm build')
+    expect(yaml).toContain('Publish to npm (Trusted Publishing)')
   })
 
   it('renders a tag trigger when requested', () => {
     const yaml = renderNpmReleaseWorkflow({
-      nodeVersion: '22',
+      nodeVersion: '24',
       packageManager: 'npm',
       trigger: 'tag',
       tagPattern: 'v*',
@@ -46,6 +51,7 @@ describe('npm release workflow', () => {
     expect(yaml).toContain('push:')
     expect(yaml).toContain("      - 'v*'")
     expect(yaml).not.toContain('workflow_dispatch:')
+    expect(yaml).toContain('Resolve release tag')
   })
 
   it('detects package manager from lockfiles', () => {
@@ -83,4 +89,3 @@ describe('npm release workflow', () => {
     }
   })
 })
-

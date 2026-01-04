@@ -44,8 +44,17 @@ export function inferWorkflowFile(rootDir: string): string | null {
 export function parseGitHubRemote(remoteUrl: string): { owner: string; repo: string } | null {
   const trimmed = remoteUrl.trim()
   if (!trimmed) return null
-  const match = trimmed.match(/github\.com[:/](.+?)\/(.+?)(?:\.git)?$/)
+  let candidate = trimmed
+  candidate = candidate.replace(/^git\+/, '')
+  candidate = candidate.split('#')[0] ?? candidate
+  candidate = candidate.split('?')[0] ?? candidate
+  if (candidate.startsWith('github:')) {
+    candidate = `https://github.com/${candidate.slice('github:'.length)}`
+  }
+  if (!candidate.includes('github.com') && /^[^/\s]+\/[^/\s]+$/.test(candidate)) {
+    candidate = `https://github.com/${candidate}`
+  }
+  const match = candidate.match(/github\.com[:/](.+?)\/(.+?)(?:\.git)?$/)
   if (!match) return null
   return { owner: match[1], repo: match[2] }
 }
-
