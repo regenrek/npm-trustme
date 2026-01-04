@@ -11,11 +11,11 @@ import {
 } from '@clack/prompts'
 import type { WizardTargetInput, WizardWorkflowOptions } from './types.js'
 
-export function wizardIntro(): void {
-  intro('npm-trustme wizard')
+export function installIntro(): void {
+  intro('npm-trustme install')
 }
 
-export function wizardOutro(message: string): void {
+export function installOutro(message: string): void {
   outro(message)
 }
 
@@ -251,6 +251,15 @@ export async function promptOverwriteExisting(path: string): Promise<boolean | n
   const wants = await confirm({
     message: `Workflow already exists at ${path}. Overwrite?`,
     initialValue: false
+  })
+  if (isCancel(wants)) return null
+  return Boolean(wants)
+}
+
+export async function promptApplyToRemaining(count: number): Promise<boolean | null> {
+  const wants = await confirm({
+    message: `Apply these settings to the remaining ${count} package(s)?`,
+    initialValue: true
   })
   if (isCancel(wants)) return null
   return Boolean(wants)
