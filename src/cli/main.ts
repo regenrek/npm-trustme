@@ -92,7 +92,7 @@ interface ResolvedTarget extends TrustedPublisherTarget {
   packageRepository?: string
   packagePrivate?: boolean
   rootDir: string
-  workspace?: WorkspaceInfo
+  workspace?: WorkspaceInfo | null
   resolutionReason: PackageResolutionReason
 }
 

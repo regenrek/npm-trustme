@@ -39,7 +39,7 @@ export interface ResolvedPackageTarget {
   private?: boolean
   rootDir: string
   reason: PackageResolutionReason
-  workspace?: WorkspaceInfo
+  workspace?: WorkspaceInfo | null
 }
 
 export function resolveRepoRoot(startDir: string): string | null {
