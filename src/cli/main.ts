@@ -33,10 +33,30 @@ import { inferWorkflowFile, parseGitHubRemote } from '../core/targets/infer.js'
 import {
   resolveRepoRoot,
   resolveWorkspaceRoot,
+  resolveWorkspaceInfo,
   resolvePackageTarget,
   type PackageResolutionReason,
   type WorkspaceInfo
 } from '../core/targets/workspace.js'
+import type { WizardTargetInput, WizardWorkflowOptions } from '../core/wizard/types.js'
+import {
+  wizardIntro,
+  wizardOutro,
+  promptWorkflowSetupChoice,
+  promptWorkflowCustomize,
+  promptWorkflowDetails,
+  promptWorkflowWriteChoice,
+  showPreview,
+  promptPackageSelection,
+  promptTargetInputs,
+  promptSummaryAction,
+  promptEditTarget,
+  promptRunCheck,
+  promptRunRecheck,
+  promptProceedEnsure,
+  promptOverwriteExisting,
+  startSpinner
+} from '../core/wizard/ui.js'
 
 interface CommonOptions {
   package?: string
@@ -94,6 +114,18 @@ interface ResolvedTarget extends TrustedPublisherTarget {
   rootDir: string
   workspace?: WorkspaceInfo | null
   resolutionReason: PackageResolutionReason
+}
+
+interface WizardCheckResult {
+  trustedPublisher: string
+  publishingAccess: string
+}
+
+interface WizardStatus {
+  packageName: string
+  precheck?: WizardCheckResult
+  ensure?: WizardCheckResult
+  postcheck?: WizardCheckResult
 }
 
 preloadEnv()
@@ -232,6 +264,13 @@ const main = defineCommand({
             await runWorkflowInit(normalizeWorkflowArgs(args))
           }
         })
+      }
+    }),
+    wizard: defineCommand({
+      meta: { name: 'wizard', description: 'Interactive setup for trusted publishing' },
+      args: commonArgs,
+      async run({ args }) {
+        await runWizard(normalizeArgs(args))
       }
     })
   }
@@ -488,6 +527,266 @@ async function runWorkflowInit(options: WorkflowInitOptions): Promise<void> {
   }
   logger.info('Review the generated workflow and adapt steps/commands to your repo before relying on it.')
   logger.info('If another workflow creates the release, prefer workflow_run over on: release.')
+}
+
+async function runWizard(options: CommonOptions): Promise<void> {
+  const logger = createLogger(Boolean(options.verbose))
+  if (!process.stdin.isTTY) {
+    throw new Error('Wizard requires an interactive TTY.')
+  }
+
+  wizardIntro()
+
+  const env = process.env
+  const rootOverride = options.workspaceRoot || env.NPM_TRUSTME_WORKSPACE_ROOT
+  const rootDir = resolveRootDir(process.cwd(), rootOverride)
+  const workspace = resolveWorkspaceInfo(rootDir)
+  const workspacePackages = workspace?.packages ?? []
+  if (workspacePackages.length > 1) {
+    showPreview(`Monorepo discovered (${workspacePackages.length} packages).`, 'Monorepo')
+  }
+
+  const detectedPm = detectPackageManager(rootDir)
+  const defaultWorkflow: WizardWorkflowOptions = {
+    enabled: true,
+    fileName: 'npm-release.yml',
+    packageManager: detectedPm,
+    nodeVersion: '24',
+    trigger: 'release',
+    tagPattern: 'v*',
+    workflowDispatch: true,
+    buildCommand: detectBuildCommand(rootDir, detectedPm) ?? undefined,
+    publishCommand: 'npm publish --access public --provenance'
+  }
+
+  const workflowChoice = await promptWorkflowSetupChoice()
+  if (!workflowChoice) return
+
+  let workflowConfig: WizardWorkflowOptions | null = null
+  if (workflowChoice !== 'skip') {
+    if (workflowChoice === 'preview') {
+      showPreview(renderWorkflowPreview(defaultWorkflow, rootDir, detectedPm), 'npm-release.yml preview')
+    }
+    const customized = await promptWorkflowCustomize(defaultWorkflow)
+    if (!customized) return
+    workflowConfig = customized
+
+    while (workflowConfig) {
+      const preview = renderWorkflowPreview(workflowConfig, rootDir, detectedPm)
+      showPreview(preview, 'npm-release.yml preview')
+      const action = await promptWorkflowWriteChoice()
+      if (!action) return
+      if (action === 'edit') {
+        const updated = await promptWorkflowDetails(workflowConfig)
+        if (!updated) return
+        workflowConfig = updated
+        continue
+      }
+      if (action === 'skip') {
+        workflowConfig.enabled = false
+      }
+      break
+    }
+  }
+
+  if (workflowConfig?.enabled) {
+    const workflowPath = path.resolve(rootDir, '.github', 'workflows', path.basename(workflowConfig.fileName))
+    if (existsSync(workflowPath)) {
+      const overwrite = await promptOverwriteExisting(workflowPath)
+      if (overwrite === null) return
+      if (!overwrite) {
+        logger.warn('Skipping workflow write.')
+      } else {
+        await writeWorkflowFile(workflowPath, renderWorkflowPreview(workflowConfig, rootDir, detectedPm))
+        logger.success(`Workflow written to ${workflowPath}. Review and adjust it for your repo.`)
+      }
+    } else {
+      await writeWorkflowFile(workflowPath, renderWorkflowPreview(workflowConfig, rootDir, detectedPm))
+      logger.success(`Workflow written to ${workflowPath}. Review and adjust it for your repo.`)
+    }
+  }
+
+  const packageChoices = workspacePackages.map(pkg => ({
+    label: pkg.name,
+    value: pkg.dir,
+    hint: path.relative(rootDir, pkg.dir) || '.'
+  }))
+
+  let selection: string[] = []
+  if (packageChoices.length > 1) {
+    const selected = await promptPackageSelection(packageChoices)
+    if (!selected || !selected.length) return
+    selection = selected
+  } else if (packageChoices.length === 1) {
+    selection = [packageChoices[0].value]
+  } else {
+    const fallback = resolvePackageTarget({ cwd: rootDir, rootDir })
+    selection = [fallback.packageDir]
+  }
+
+  const inferredRepo = options.autoRepo ? inferGitHubRepo() : null
+  const defaultWorkflowName = options.workflow || env.NPM_TRUSTME_WORKFLOW || inferWorkflowFile(rootDir) || 'npm-release.yml'
+  const defaultEnvironment = options.environment || env.NPM_TRUSTME_ENVIRONMENT || 'npm'
+  const defaultOwner = options.owner || env.NPM_TRUSTME_OWNER || inferredRepo?.owner || ''
+  const defaultRepo = options.repo || env.NPM_TRUSTME_REPO || inferredRepo?.repo || ''
+  const defaultAccess = normalizePublishingAccess(options.publishingAccess || env.NPM_TRUSTME_PUBLISHING_ACCESS)
+
+  const targets: WizardTargetInput[] = []
+  for (const dir of selection) {
+    const resolved = resolvePackageTarget({ cwd: dir, rootDir, packagePath: dir })
+    const input: WizardTargetInput = {
+      packageName: resolved.packageName,
+      packagePath: path.relative(rootDir, resolved.packageDir) || '.',
+      owner: defaultOwner,
+      repo: defaultRepo,
+      workflow: defaultWorkflowName,
+      environment: defaultEnvironment,
+      publishingAccess: defaultAccess
+    }
+    const updated = await promptTargetInputs(input)
+    if (!updated) return
+    targets.push(updated)
+  }
+
+  while (true) {
+    const summary = formatWizardSummary(targets)
+    const action = await promptSummaryAction(summary)
+    if (!action || action === 'cancel') return
+    if (action === 'proceed') break
+    const toEdit = await promptEditTarget(targets)
+    if (!toEdit) return
+    const target = targets.find(t => t.packageName === toEdit)
+    if (!target) continue
+    const updated = await promptTargetInputs(target)
+    if (!updated) return
+    Object.assign(target, updated)
+  }
+
+  const runCheck = await promptRunCheck()
+  if (runCheck === null) return
+
+  const spin = startSpinner('Launching browser...')
+  const browserOptions = await resolveBrowserOptions(options, logger)
+  const session = await launchBrowser(browserOptions)
+  spin.stop('Browser ready')
+  await applyBrowserCookies(session, browserOptions, options, logger)
+
+  const statusMap = new Map<string, WizardStatus>()
+
+  try {
+    await ensureLoggedIn(session.page, logger, buildEnsureOptions(options))
+    if (runCheck) {
+      logger.info('Running checks...')
+      await runWizardChecks(session.page, targets, logger, buildEnsureOptions(options), statusMap, 'precheck')
+      showPreview(formatWizardStatus(statusMap, 'precheck'), 'Pre-check summary')
+    }
+
+    const proceedEnsure = await promptProceedEnsure()
+    if (proceedEnsure === null) return
+    if (proceedEnsure) {
+      logger.info('Ensuring trusted publishers...')
+      await runWizardChecks(session.page, targets, logger, buildEnsureOptions(options), statusMap, 'ensure', false)
+      showPreview(formatWizardStatus(statusMap, 'ensure'), 'Ensure summary')
+
+      const recheck = await promptRunRecheck()
+      if (recheck === null) return
+      if (recheck) {
+        logger.info('Rechecking...')
+        await runWizardChecks(session.page, targets, logger, buildEnsureOptions(options), statusMap, 'postcheck')
+        showPreview(formatWizardStatus(statusMap, 'postcheck'), 'Post-check summary')
+      }
+    }
+  } finally {
+    await saveStorageState(session.context, options.storage)
+    await closeBrowser(session)
+  }
+
+  wizardOutro('Wizard complete. Run `npm-trustme check` any time to verify.')
+}
+
+function renderWorkflowPreview(
+  workflowConfig: WizardWorkflowOptions,
+  rootDir: string,
+  detectedPm: ReturnType<typeof detectPackageManager>
+): string {
+  const packageManager = normalizePackageManager(workflowConfig.packageManager, detectedPm)
+  const trigger = normalizeTrigger(workflowConfig.trigger)
+  const tagPattern = resolveTagPattern(workflowConfig.tagPattern)
+  const installCommand = resolveInstallCommand(rootDir, packageManager)
+  return renderNpmReleaseWorkflow({
+    nodeVersion: workflowConfig.nodeVersion,
+    packageManager,
+    trigger,
+    tagPattern,
+    workflowDispatch: workflowConfig.workflowDispatch,
+    installCommand,
+    buildCommand: workflowConfig.buildCommand,
+    publishCommand: workflowConfig.publishCommand
+  })
+}
+
+async function writeWorkflowFile(filePath: string, contents: string): Promise<void> {
+  await mkdir(path.dirname(filePath), { recursive: true })
+  await writeFile(filePath, `${contents}\n`, 'utf8')
+}
+
+function formatWizardSummary(targets: WizardTargetInput[]): string {
+  return targets
+    .map(
+      (t) =>
+        `- ${t.packageName} (${t.owner}/${t.repo}, ${t.workflow}, env=${t.environment}, access=${t.publishingAccess})`
+    )
+    .join('\n')
+}
+
+function formatWizardStatus(statusMap: Map<string, WizardStatus>, stage: keyof WizardStatus): string {
+  const rows: string[] = []
+  for (const status of statusMap.values()) {
+    const data = status[stage] as WizardCheckResult | undefined
+    if (!data) continue
+    rows.push(
+      `${status.packageName.padEnd(28)}  TP: ${data.trustedPublisher.padEnd(12)}  Access: ${data.publishingAccess}`
+    )
+  }
+  return rows.length ? rows.join('\n') : 'No results.'
+}
+
+async function runWizardChecks(
+  page: Parameters<typeof ensureTrustedPublisher>[0],
+  targets: WizardTargetInput[],
+  logger: ReturnType<typeof createLogger>,
+  options: ReturnType<typeof buildEnsureOptions>,
+  statusMap: Map<string, WizardStatus>,
+  stage: 'precheck' | 'ensure' | 'postcheck',
+  dryRun: boolean = stage !== 'ensure'
+): Promise<void> {
+  for (const target of targets) {
+    const tpTarget: TrustedPublisherTarget = {
+      packageName: target.packageName,
+      owner: target.owner,
+      repo: target.repo,
+      workflow: target.workflow,
+      environment: target.environment,
+      maintainer: target.maintainer,
+      publishingAccess: target.publishingAccess
+    }
+
+    const tp = await ensureTrustedPublisher(page, tpTarget, logger, { ...options, dryRun })
+    const access = await ensurePublishingAccess(page, tpTarget, logger, { ...options, dryRun })
+
+    const summary: WizardCheckResult = {
+      trustedPublisher: normalizeWizardStatus(tp, dryRun),
+      publishingAccess: normalizeWizardStatus(access, dryRun)
+    }
+    const entry = statusMap.get(target.packageName) ?? { packageName: target.packageName }
+    entry[stage] = summary
+    statusMap.set(target.packageName, entry)
+  }
+}
+
+function normalizeWizardStatus(status: string, dryRun: boolean): string {
+  if (dryRun && status === 'dry-run') return 'missing'
+  return status
 }
 
 async function runDoctor(options: DoctorOptions): Promise<void> {
