@@ -256,6 +256,15 @@ export async function promptOverwriteExisting(path: string): Promise<boolean | n
   return Boolean(wants)
 }
 
+export async function promptApplyToRemaining(count: number): Promise<boolean | null> {
+  const wants = await confirm({
+    message: `Apply these settings to the remaining ${count} package(s)?`,
+    initialValue: true
+  })
+  if (isCancel(wants)) return null
+  return Boolean(wants)
+}
+
 export function startSpinner(message: string) {
   const spin = spinner()
   spin.start(message)

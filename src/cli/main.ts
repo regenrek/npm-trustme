@@ -55,6 +55,7 @@ import {
   promptRunRecheck,
   promptProceedEnsure,
   promptOverwriteExisting,
+  promptApplyToRemaining,
   startSpinner
 } from '../core/wizard/ui.js'
 
@@ -632,20 +633,49 @@ async function runWizard(options: CommonOptions): Promise<void> {
   const defaultAccess = normalizePublishingAccess(options.publishingAccess || env.NPM_TRUSTME_PUBLISHING_ACCESS)
 
   const targets: WizardTargetInput[] = []
-  for (const dir of selection) {
-    const resolved = resolvePackageTarget({ cwd: dir, rootDir, packagePath: dir })
-    const input: WizardTargetInput = {
-      packageName: resolved.packageName,
-      packagePath: path.relative(rootDir, resolved.packageDir) || '.',
+  if (selection.length) {
+    const first = selection[0]
+    const resolvedFirst = resolvePackageTarget({ cwd: first, rootDir, packagePath: first })
+    const firstInput: WizardTargetInput = {
+      packageName: resolvedFirst.packageName,
+      packagePath: path.relative(rootDir, resolvedFirst.packageDir) || '.',
       owner: defaultOwner,
       repo: defaultRepo,
       workflow: defaultWorkflowName,
       environment: defaultEnvironment,
       publishingAccess: defaultAccess
     }
-    const updated = await promptTargetInputs(input)
-    if (!updated) return
-    targets.push(updated)
+    const updatedFirst = await promptTargetInputs(firstInput)
+    if (!updatedFirst) return
+    targets.push(updatedFirst)
+
+    if (selection.length > 1) {
+      const applyAll = await promptApplyToRemaining(selection.length - 1)
+      if (applyAll === null) return
+      for (const dir of selection.slice(1)) {
+        const resolved = resolvePackageTarget({ cwd: dir, rootDir, packagePath: dir })
+        if (applyAll) {
+          targets.push({
+            ...updatedFirst,
+            packageName: resolved.packageName,
+            packagePath: path.relative(rootDir, resolved.packageDir) || '.'
+          })
+        } else {
+          const input: WizardTargetInput = {
+            packageName: resolved.packageName,
+            packagePath: path.relative(rootDir, resolved.packageDir) || '.',
+            owner: updatedFirst.owner,
+            repo: updatedFirst.repo,
+            workflow: updatedFirst.workflow,
+            environment: updatedFirst.environment,
+            publishingAccess: updatedFirst.publishingAccess
+          }
+          const updated = await promptTargetInputs(input)
+          if (!updated) return
+          targets.push(updated)
+        }
+      }
+    }
   }
 
   while (true) {
@@ -669,6 +699,7 @@ async function runWizard(options: CommonOptions): Promise<void> {
   const browserOptions = await resolveBrowserOptions(options, logger)
   const session = await launchBrowser(browserOptions)
   spin.stop('Browser ready')
+  showPreview('Complete any npm 2FA prompts in the browser and keep it open.', 'Browser')
   await applyBrowserCookies(session, browserOptions, options, logger)
 
   const statusMap = new Map<string, WizardStatus>()
@@ -676,24 +707,45 @@ async function runWizard(options: CommonOptions): Promise<void> {
   try {
     await ensureLoggedIn(session.page, logger, buildEnsureOptions(options))
     if (runCheck) {
-      logger.info('Running checks...')
-      await runWizardChecks(session.page, targets, logger, buildEnsureOptions(options), statusMap, 'precheck')
-      showPreview(formatWizardStatus(statusMap, 'precheck'), 'Pre-check summary')
+      const checkSpin = startSpinner('Running checks...')
+      try {
+        await runWizardChecks(session.page, targets, logger, buildEnsureOptions(options), statusMap, 'precheck')
+        checkSpin.stop('Checks complete')
+        showPreview(formatWizardStatus(statusMap, 'precheck'), 'Pre-check summary')
+      } catch (error) {
+        checkSpin.stop('Checks failed')
+        handleWizardBrowserError(error, logger)
+        return
+      }
     }
 
     const proceedEnsure = await promptProceedEnsure()
     if (proceedEnsure === null) return
     if (proceedEnsure) {
-      logger.info('Ensuring trusted publishers...')
-      await runWizardChecks(session.page, targets, logger, buildEnsureOptions(options), statusMap, 'ensure', false)
-      showPreview(formatWizardStatus(statusMap, 'ensure'), 'Ensure summary')
+      const ensureSpin = startSpinner('Ensuring trusted publishers...')
+      try {
+        await runWizardChecks(session.page, targets, logger, buildEnsureOptions(options), statusMap, 'ensure', false)
+        ensureSpin.stop('Ensure complete')
+        showPreview(formatWizardStatus(statusMap, 'ensure'), 'Ensure summary')
+      } catch (error) {
+        ensureSpin.stop('Ensure failed')
+        handleWizardBrowserError(error, logger)
+        return
+      }
 
       const recheck = await promptRunRecheck()
       if (recheck === null) return
       if (recheck) {
-        logger.info('Rechecking...')
-        await runWizardChecks(session.page, targets, logger, buildEnsureOptions(options), statusMap, 'postcheck')
-        showPreview(formatWizardStatus(statusMap, 'postcheck'), 'Post-check summary')
+        const recheckSpin = startSpinner('Rechecking...')
+        try {
+          await runWizardChecks(session.page, targets, logger, buildEnsureOptions(options), statusMap, 'postcheck')
+          recheckSpin.stop('Recheck complete')
+          showPreview(formatWizardStatus(statusMap, 'postcheck'), 'Post-check summary')
+        } catch (error) {
+          recheckSpin.stop('Recheck failed')
+          handleWizardBrowserError(error, logger)
+          return
+        }
       }
     }
   } finally {
@@ -787,6 +839,15 @@ async function runWizardChecks(
 function normalizeWizardStatus(status: string, dryRun: boolean): string {
   if (dryRun && status === 'dry-run') return 'missing'
   return status
+}
+
+function handleWizardBrowserError(error: unknown, logger: ReturnType<typeof createLogger>): void {
+  const message = error instanceof Error ? error.message : String(error)
+  if (message.includes('Target page, context or browser has been closed')) {
+    logger.error('Browser closed. Keep the window open during checks/ensure and try again.')
+    return
+  }
+  throw error instanceof Error ? error : new Error(message)
 }
 
 async function runDoctor(options: DoctorOptions): Promise<void> {

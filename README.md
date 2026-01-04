@@ -78,6 +78,7 @@ npx npm-trustme doctor
 npx npm-trustme wizard
 ```
 The wizard guides you through workflow setup, monorepo package selection, check, and ensure.
+When multiple packages are selected, you can apply the same repo/workflow/environment settings to the rest.
 
 ### Example (explicit flags)
 ```bash
