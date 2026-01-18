@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { defineCommand, renderUsage, runMain, type ArgsDef, type CommandDef } from 'citty'
+import type { Page } from 'playwright'
 import { config as loadEnv } from 'dotenv'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -905,7 +906,7 @@ function formatWizardStatus(statusMap: Map<string, WizardStatus>, stage: keyof W
 }
 
 async function runWizardChecks(
-  page: Parameters<typeof ensureTrustedPublisher>[0],
+  page: Page,
   targets: WizardTargetInput[],
   logger: ReturnType<typeof createLogger>,
   options: ReturnType<typeof buildEnsureOptions>,
@@ -1599,3 +1600,4 @@ function findOnPath(binaries: string[]): string | null {
   }
   return null
 }
+import { normalizeWorkflowName } from '../core/targets/normalize.js'

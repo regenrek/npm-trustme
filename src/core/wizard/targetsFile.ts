@@ -26,10 +26,10 @@ export async function loadTargetsFile(filePath: string): Promise<TargetFileEntry
     parsed = parseYaml(trimmed)
   }
 
-  const entries = Array.isArray(parsed)
+  const entries: unknown[] | null = Array.isArray(parsed)
     ? parsed
-    : parsed && typeof parsed === 'object' && Array.isArray((parsed as any).targets)
-      ? (parsed as any).targets
+    : parsed && typeof parsed === 'object' && Array.isArray((parsed as { targets?: unknown[] }).targets)
+      ? (parsed as { targets: unknown[] }).targets
       : null
 
   if (!entries) {
