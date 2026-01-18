@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { defineCommand, renderUsage, runMain, type ArgsDef, type CommandDef } from 'citty'
+import type { Page } from 'playwright'
 import { config as loadEnv } from 'dotenv'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -10,15 +11,15 @@ import { createInterface } from 'node:readline/promises'
 import { createLogger } from '../core/logger.js'
 import { launchBrowser, saveStorageState, closeBrowser } from '../core/browser/session.js'
 import { resolveChromeProfileAuto, readNpmCookiesForProfile, defaultChromeUserDataDir, type InlineCookieInput } from '../core/browser/chromeProfiles.js'
-import { buildCdpUrl, detectCdpUrl, fetchCdpVersion } from '../core/browser/cdp.js'
+import { buildCdpUrl, detectCdpUrl, fetchCdpVersion, decideCdpUsage } from '../core/browser/cdp.js'
 import { readConfig, writeConfig, defaultTrustmeChromeDir } from '../core/config.js'
 import {
   ensureLoggedIn,
-  ensureTrustedPublisher,
-  ensurePublishingAccess,
   type TrustedPublisherTarget,
-  type PublishingAccess
+  type PublishingAccess,
+  normalizePublishingAccess
 } from '../core/npm/trustedPublisher.js'
+import { ensureAccessThenPublisher } from '../core/npm/ensureFlow.js'
 import { fetchPackageMetadata, getLatestVersion, hasTrustedPublisher as hasRegistryTrustedPublisher, extractRepository } from '../core/npm/registry.js'
 import {
   detectBuildCommand,
@@ -39,6 +40,13 @@ import {
   type WorkspaceInfo
 } from '../core/targets/workspace.js'
 import type { WizardTargetInput, WizardWorkflowOptions } from '../core/wizard/types.js'
+import {
+  resolveNonInteractiveWorkflow,
+  resolveNonInteractiveTargets,
+  resolveNonInteractiveRunFlags,
+  resolveDetectedPackageManager,
+  writeWorkflowIfNeeded
+} from './nonInteractiveInstall.js'
 import {
   installIntro,
   installOutro,
@@ -62,6 +70,10 @@ import {
 interface CommonOptions {
   package?: string
   packagePath?: string
+  packages?: string
+  packagePaths?: string
+  allPackages?: boolean
+  targetsFile?: string
   owner?: string
   repo?: string
   workflow?: string
@@ -69,6 +81,20 @@ interface CommonOptions {
   maintainer?: string
   publishingAccess?: string
   yes?: boolean
+  nonInteractive?: boolean
+  runCheck?: boolean
+  runRecheck?: boolean
+  workflowInit?: boolean
+  workflowFile?: string
+  workflowPm?: string
+  workflowNode?: string
+  workflowTrigger?: string
+  workflowTagPattern?: string
+  workflowDispatch?: boolean
+  workflowBuildCommand?: string
+  workflowSkipBuild?: boolean
+  workflowPublishCommand?: string
+  workflowForce?: boolean
   headless?: boolean
   slowMo?: number
   timeout?: number
@@ -193,6 +219,28 @@ const workflowArgs = {
   'env-file': commonArgs['env-file']
 } as const
 
+const installArgs = {
+  ...commonArgs,
+  'non-interactive': { type: 'boolean', description: 'Run install without prompts' },
+  packages: { type: 'string', description: 'Comma-separated package names (monorepo)' },
+  'package-paths': { type: 'string', description: 'Comma-separated package paths (monorepo)' },
+  'all-packages': { type: 'boolean', description: 'Select all workspace packages' },
+  'targets-file': { type: 'string', description: 'Path to JSON/YAML file with target configs' },
+  'run-check': { type: 'string', description: 'Run pre-check (true|false). Default true in non-interactive.' },
+  'run-recheck': { type: 'string', description: 'Run post-check (true|false). Default true in non-interactive.' },
+  'workflow-init': { type: 'boolean', description: 'Write npm release workflow file' },
+  'workflow-file': { type: 'string', description: 'Workflow filename (default: npm-release.yml)' },
+  'workflow-pm': { type: 'string', description: 'Workflow package manager: pnpm|npm (default: auto)' },
+  'workflow-node': { type: 'string', description: 'Workflow node version (default: 24)' },
+  'workflow-trigger': { type: 'string', description: 'Workflow trigger: release|tag (default: release)' },
+  'workflow-tag-pattern': { type: 'string', description: 'Tag pattern when trigger=tag (default: v*)' },
+  'workflow-dispatch': { type: 'string', description: 'Enable workflow_dispatch (default: true)' },
+  'workflow-build-command': { type: 'string', description: 'Build command (default: auto-detect)' },
+  'workflow-skip-build': { type: 'string', description: 'Skip build step (true|false)' },
+  'workflow-publish-command': { type: 'string', description: 'Publish command (default: npm publish --access public --provenance)' },
+  'workflow-force': { type: 'string', description: 'Overwrite existing workflow file (true|false)' }
+} as const
+
 const main = defineCommand({
   meta: {
     name: 'npm-trustme',
@@ -268,8 +316,8 @@ const main = defineCommand({
       }
     }),
     install: defineCommand({
-      meta: { name: 'install', description: 'Interactive setup for trusted publishing' },
-      args: commonArgs,
+      meta: { name: 'install', description: 'Setup for trusted publishing (interactive or non-interactive)' },
+      args: installArgs,
       async run({ args }) {
         await runInstall(normalizeArgs(args))
       }
@@ -290,14 +338,15 @@ async function runCheck(options: CommonOptions): Promise<void> {
 
   try {
     await ensureLoggedIn(session.page, logger, buildEnsureOptions(options))
-    const status = await ensureTrustedPublisher(session.page, target, logger, {
-      ...buildEnsureOptions(options),
-      dryRun: true
-    })
-    const accessStatus = await ensurePublishingAccess(session.page, target, logger, {
-      ...buildEnsureOptions(options),
-      dryRun: true
-    })
+    const { trustedPublisher: status, publishingAccess: accessStatus } = await ensureAccessThenPublisher(
+      session.page,
+      target,
+      logger,
+      {
+        ...buildEnsureOptions(options),
+        dryRun: true
+      }
+    )
     const registryOk = registryStatus?.hasTrustedPublisher === false ? false : true
     if (status === 'exists' && accessStatus === 'ok' && registryOk) {
       logger.success('Trusted publisher + access settings present.')
@@ -331,14 +380,15 @@ async function runEnsure(options: CommonOptions & { dryRun?: boolean }): Promise
 
   try {
     await ensureLoggedIn(session.page, logger, buildEnsureOptions(options))
-    const status = await ensureTrustedPublisher(session.page, target, logger, {
-      ...buildEnsureOptions(options),
-      dryRun: options.dryRun
-    })
-    const accessStatus = await ensurePublishingAccess(session.page, target, logger, {
-      ...buildEnsureOptions(options),
-      dryRun: options.dryRun
-    })
+    const { trustedPublisher: status, publishingAccess: accessStatus } = await ensureAccessThenPublisher(
+      session.page,
+      target,
+      logger,
+      {
+        ...buildEnsureOptions(options),
+        dryRun: options.dryRun
+      }
+    )
     if (status === 'dry-run' || accessStatus === 'dry-run') {
       process.exitCode = 2
     }
@@ -532,6 +582,10 @@ async function runWorkflowInit(options: WorkflowInitOptions): Promise<void> {
 
 async function runInstall(options: CommonOptions): Promise<void> {
   const logger = createLogger(Boolean(options.verbose))
+  if (options.nonInteractive) {
+    await runInstallNonInteractive(options, logger)
+    return
+  }
   if (!process.stdin.isTTY) {
     throw new Error('Install requires an interactive TTY.')
   }
@@ -626,7 +680,9 @@ async function runInstall(options: CommonOptions): Promise<void> {
   }
 
   const inferredRepo = options.autoRepo ? inferGitHubRepo() : null
-  const defaultWorkflowName = options.workflow || env.NPM_TRUSTME_WORKFLOW || inferWorkflowFile(rootDir) || 'npm-release.yml'
+  const defaultWorkflowName = normalizeWorkflowName(
+    options.workflow || env.NPM_TRUSTME_WORKFLOW || inferWorkflowFile(rootDir) || 'npm-release.yml'
+  )
   const defaultEnvironment = options.environment || env.NPM_TRUSTME_ENVIRONMENT || 'npm'
   const defaultOwner = options.owner || env.NPM_TRUSTME_OWNER || inferredRepo?.owner || ''
   const defaultRepo = options.repo || env.NPM_TRUSTME_REPO || inferredRepo?.repo || ''
@@ -756,6 +812,52 @@ async function runInstall(options: CommonOptions): Promise<void> {
   installOutro('Install complete. Run `npm-trustme check` any time to verify.')
 }
 
+async function runInstallNonInteractive(options: CommonOptions, logger: ReturnType<typeof createLogger>): Promise<void> {
+  const env = process.env
+  const rootOverride = options.workspaceRoot || env.NPM_TRUSTME_WORKSPACE_ROOT
+  const rootDir = resolveRootDir(process.cwd(), rootOverride)
+  const detectedPm = resolveDetectedPackageManager(rootDir)
+
+  if (options.workflowInit) {
+    const workflowConfig = resolveNonInteractiveWorkflow(options, rootDir, detectedPm)
+    await writeWorkflowIfNeeded(options, workflowConfig, rootDir)
+    logger.success(`Workflow written to ${path.resolve(rootDir, '.github', 'workflows', workflowConfig.fileName)}.`)
+  }
+
+  const inferredRepo = options.autoRepo ? inferGitHubRepo() : null
+  const targets = await resolveNonInteractiveTargets(options, rootDir, env, inferredRepo)
+  if (!targets.length) {
+    throw new Error('No targets resolved for non-interactive install.')
+  }
+
+  const { runCheck, runRecheck } = resolveNonInteractiveRunFlags(options)
+
+  const browserOptions = await resolveBrowserOptions(options, logger)
+  const session = await launchBrowser(browserOptions)
+  await applyBrowserCookies(session, browserOptions, options, logger)
+
+  const statusMap = new Map<string, WizardStatus>()
+
+  try {
+    await ensureLoggedIn(session.page, logger, buildEnsureOptions(options))
+    if (runCheck) {
+      await runWizardChecks(session.page, targets, logger, buildEnsureOptions(options), statusMap, 'precheck')
+      logger.info(formatWizardStatus(statusMap, 'precheck'))
+    }
+
+    await runWizardChecks(session.page, targets, logger, buildEnsureOptions(options), statusMap, 'ensure', false)
+    logger.info(formatWizardStatus(statusMap, 'ensure'))
+
+    if (runRecheck) {
+      await runWizardChecks(session.page, targets, logger, buildEnsureOptions(options), statusMap, 'postcheck')
+      logger.info(formatWizardStatus(statusMap, 'postcheck'))
+    }
+  } finally {
+    await saveStorageState(session.context, options.storage)
+    await closeBrowser(session)
+  }
+}
+
 function renderWorkflowPreview(
   workflowConfig: WizardWorkflowOptions,
   rootDir: string,
@@ -804,7 +906,7 @@ function formatWizardStatus(statusMap: Map<string, WizardStatus>, stage: keyof W
 }
 
 async function runWizardChecks(
-  page: Parameters<typeof ensureTrustedPublisher>[0],
+  page: Page,
   targets: WizardTargetInput[],
   logger: ReturnType<typeof createLogger>,
   options: ReturnType<typeof buildEnsureOptions>,
@@ -823,8 +925,12 @@ async function runWizardChecks(
       publishingAccess: target.publishingAccess
     }
 
-    const tp = await ensureTrustedPublisher(page, tpTarget, logger, { ...options, dryRun })
-    const access = await ensurePublishingAccess(page, tpTarget, logger, { ...options, dryRun })
+    const { trustedPublisher: tp, publishingAccess: access } = await ensureAccessThenPublisher(
+      page,
+      tpTarget,
+      logger,
+      { ...options, dryRun }
+    )
 
     const summary: WizardCheckResult = {
       trustedPublisher: normalizeWizardStatus(tp, dryRun),
@@ -928,6 +1034,10 @@ function normalizeArgs(raw: Record<string, unknown>): CommonOptions {
   return {
     package: stringArg(raw.package),
     packagePath: stringArg((raw as any)['package-path']),
+    packages: stringArg((raw as any).packages),
+    packagePaths: stringArg((raw as any)['package-paths']),
+    allPackages: boolArg((raw as any)['all-packages']),
+    targetsFile: stringArg((raw as any)['targets-file']),
     owner: stringArg(raw.owner),
     repo: stringArg(raw.repo),
     workflow: stringArg(raw.workflow),
@@ -935,6 +1045,20 @@ function normalizeArgs(raw: Record<string, unknown>): CommonOptions {
     maintainer: stringArg(raw.maintainer),
     publishingAccess: stringArg((raw as any)['publishing-access']),
     yes: boolArg((raw as any).yes),
+    nonInteractive: boolArg((raw as any)['non-interactive']),
+    runCheck: boolArg((raw as any)['run-check']),
+    runRecheck: boolArg((raw as any)['run-recheck']),
+    workflowInit: boolArg((raw as any)['workflow-init']),
+    workflowFile: stringArg((raw as any)['workflow-file']),
+    workflowPm: stringArg((raw as any)['workflow-pm']),
+    workflowNode: stringArg((raw as any)['workflow-node']),
+    workflowTrigger: stringArg((raw as any)['workflow-trigger']),
+    workflowTagPattern: stringArg((raw as any)['workflow-tag-pattern']),
+    workflowDispatch: boolArg((raw as any)['workflow-dispatch']),
+    workflowBuildCommand: stringArg((raw as any)['workflow-build-command']),
+    workflowSkipBuild: boolArg((raw as any)['workflow-skip-build']),
+    workflowPublishCommand: stringArg((raw as any)['workflow-publish-command']),
+    workflowForce: boolArg((raw as any)['workflow-force']),
     headless: Boolean(raw.headless),
     slowMo: numberArg((raw as any)['slow-mo']),
     timeout: numberArg(raw.timeout),
@@ -1162,16 +1286,14 @@ function inferGitHubRepo(): { owner: string; repo: string } | null {
   }
 }
 
-function normalizePublishingAccess(value?: string): PublishingAccess {
-  const normalized = (value || '').toLowerCase()
-  if (normalized === 'allow-bypass-token' || normalized === 'allow-bypass') return 'allow-bypass-token'
-  if (normalized === 'skip') return 'skip'
-  return 'disallow-tokens'
-}
-
 async function resolveBrowserOptions(options: CommonOptions, logger: ReturnType<typeof createLogger>) {
   const env = process.env
   const config = await readConfig(env)
+  const envChromeCdpUrl = env.NPM_TRUSTME_CHROME_CDP_URL
+  const envChromeDebugPort = numberArg(env.NPM_TRUSTME_CHROME_DEBUG_PORT)
+  const explicitCdp = Boolean(
+    options.chromeCdpUrl || options.chromeDebugPort || envChromeCdpUrl || envChromeDebugPort
+  )
   const resolved = {
     headless: Boolean(options.headless),
     slowMo: options.slowMo,
@@ -1181,17 +1303,32 @@ async function resolveBrowserOptions(options: CommonOptions, logger: ReturnType<
     chromeProfileDir: options.chromeProfileDir || env.NPM_TRUSTME_CHROME_PROFILE_DIR,
     chromeUserDataDir: options.chromeUserDataDir || env.NPM_TRUSTME_CHROME_USER_DATA_DIR || config.chromeUserDataDir,
     chromePath: options.chromePath || env.NPM_TRUSTME_CHROME_PATH || config.chromePath,
-    chromeCdpUrl: options.chromeCdpUrl || env.NPM_TRUSTME_CHROME_CDP_URL || config.chromeCdpUrl,
-    chromeDebugPort:
-      options.chromeDebugPort || numberArg(env.NPM_TRUSTME_CHROME_DEBUG_PORT) || config.chromeDebugPort,
+    chromeCdpUrl: options.chromeCdpUrl || envChromeCdpUrl || config.chromeCdpUrl,
+    chromeDebugPort: options.chromeDebugPort || envChromeDebugPort || config.chromeDebugPort,
     usePersistentProfile: false
   }
 
   const cdpDetected = await resolveCdpUrlAuto(resolved, logger)
-  if (cdpDetected) {
-    resolved.chromeCdpUrl = cdpDetected
-    logger.info(`Using Chrome via CDP at ${cdpDetected}.`)
+  const cdpDecision = decideCdpUsage({
+    detectedUrl: cdpDetected,
+    explicit: explicitCdp,
+    configuredUrl: resolved.chromeCdpUrl,
+    configuredPort: resolved.chromeDebugPort
+  })
+  if (cdpDecision.cdpUrl) {
+    resolved.chromeCdpUrl = cdpDecision.cdpUrl
+    resolved.chromeDebugPort = undefined
+    logger.info(`Using Chrome via CDP at ${cdpDecision.cdpUrl}.`)
     return resolved
+  }
+  if (cdpDecision.shouldError) {
+    const attempted = cdpDecision.attemptedUrl ?? 'http://127.0.0.1:9222'
+    throw new Error(`Chrome CDP endpoint not reachable at ${attempted}. Start Chrome or run \`npm-trustme chrome start\`.`)
+  }
+  if (cdpDecision.shouldFallback) {
+    logger.warn('Configured Chrome CDP endpoint not reachable. Falling back to Playwright-managed Chrome.')
+    resolved.chromeCdpUrl = undefined
+    resolved.chromeDebugPort = undefined
   }
 
   if (resolved.chromeProfile || resolved.chromeProfileDir) {
@@ -1463,3 +1600,4 @@ function findOnPath(binaries: string[]): string | null {
   }
   return null
 }
+import { normalizeWorkflowName } from '../core/targets/normalize.js'

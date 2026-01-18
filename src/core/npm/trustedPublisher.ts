@@ -21,6 +21,13 @@ export interface EnsureOptions {
   headless?: boolean
 }
 
+export function normalizePublishingAccess(value?: string): PublishingAccess {
+  const normalized = (value || '').toLowerCase()
+  if (normalized === 'allow-bypass-token' || normalized === 'allow-bypass') return 'allow-bypass-token'
+  if (normalized === 'skip') return 'skip'
+  return 'disallow-tokens'
+}
+
 const LOGIN_URL = 'https://www.npmjs.com/login'
 const PROFILE_URL = 'https://www.npmjs.com/settings/profile'
 
