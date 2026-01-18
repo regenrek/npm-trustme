@@ -37,3 +37,37 @@ export async function detectCdpUrl(urls: string[], timeoutMs = 800): Promise<str
   }
   return null
 }
+
+export interface CdpDecisionInput {
+  detectedUrl?: string | null
+  explicit: boolean
+  configuredUrl?: string
+  configuredPort?: number
+}
+
+export interface CdpDecisionResult {
+  cdpUrl?: string
+  shouldError: boolean
+  shouldFallback: boolean
+  attemptedUrl?: string
+}
+
+export function decideCdpUsage(input: CdpDecisionInput): CdpDecisionResult {
+  const detected = input.detectedUrl ?? null
+  if (detected) {
+    return { cdpUrl: detected, shouldError: false, shouldFallback: false }
+  }
+
+  const attemptedUrl =
+    input.configuredUrl ?? (input.configuredPort !== undefined ? buildCdpUrl(input.configuredPort) : undefined)
+
+  if (input.explicit) {
+    return { shouldError: true, shouldFallback: false, attemptedUrl }
+  }
+
+  if (input.configuredUrl || input.configuredPort !== undefined) {
+    return { shouldError: false, shouldFallback: true, attemptedUrl }
+  }
+
+  return { shouldError: false, shouldFallback: false }
+}
